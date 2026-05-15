@@ -2,12 +2,16 @@ import streamlit as st
 import sqlite3
 import bcrypt
 from datetime import datetime, timedelta, date
+from zoneinfo import ZoneInfo  # Built-in timezone support (Python 3.9+)
 
 st.set_page_config(
     page_title="Booking Scheduler",
     page_icon="📅",
     layout="wide"
 )
+
+# Define IST Timezone
+IST = ZoneInfo("Asia/Kolkata")
 
 # ---------------- DATABASE ---------------- #
 
@@ -39,7 +43,8 @@ conn.commit()
 
 # ---------------- REMOVE EXPIRED BOOKINGS ---------------- #
 
-now = datetime.now()
+# Fetch current time in IST
+now = datetime.now(IST)
 
 c.execute("""
 SELECT rowid, booking_date, slot
@@ -49,19 +54,18 @@ FROM bookings
 all_bookings = c.fetchall()
 
 for booking in all_bookings:
-
     rowid = booking[0]
     booking_date = booking[1]
     slot = booking[2]
 
+    # Parse and explicitly attach the IST timezone to the database record
     booking_datetime = datetime.strptime(
         f"{booking_date} {slot}",
         "%Y-%m-%d %I:%M %p"
-    )
+    ).replace(tzinfo=IST)
 
-    # Remove expired bookings
+    # Remove expired bookings securely comparing aware datetimes
     if booking_datetime < now:
-
         c.execute(
             "DELETE FROM bookings WHERE rowid=?",
             (rowid,)
@@ -111,13 +115,8 @@ if not st.session_state.logged_in:
             existing = c.fetchone()
 
             if existing:
-
-                st.error(
-                    "Username already exists"
-                )
-
+                st.error("Username already exists")
             else:
-
                 c.execute(
                     """
                     INSERT INTO users
@@ -131,12 +130,8 @@ if not st.session_state.logged_in:
                         )
                     )
                 )
-
                 conn.commit()
-
-                st.success(
-                    "Account created!"
-                )
+                st.success("Account created!")
 
     # -------- LOGIN -------- #
 
@@ -155,30 +150,19 @@ if not st.session_state.logged_in:
             user = c.fetchone()
 
             if user:
-
                 stored_password = user[1]
 
                 if bcrypt.checkpw(
                     password.encode(),
                     stored_password
                 ):
-
                     st.session_state.logged_in = True
                     st.session_state.username = username
-
                     st.rerun()
-
                 else:
-
-                    st.error(
-                        "Wrong password"
-                    )
-
+                    st.error("Wrong password")
             else:
-
-                st.error(
-                    "User not found"
-                )
+                st.error("User not found")
 
 # ---------------- MAIN APP ---------------- #
 
@@ -194,16 +178,10 @@ else:
 
         st.subheader("👑 Admin Panel")
 
-        c.execute(
-            "SELECT COUNT(*) FROM users"
-        )
-
+        c.execute("SELECT COUNT(*) FROM users")
         total_users = c.fetchone()[0]
 
-        c.execute(
-            "SELECT COUNT(*) FROM bookings"
-        )
-
+        c.execute("SELECT COUNT(*) FROM bookings")
         total_bookings = c.fetchone()[0]
 
         st.write(f"Total Users: {total_users}")
@@ -222,55 +200,38 @@ else:
         st.subheader("📋 All Bookings")
 
         for item in all_data:
-
-            st.write(
-                f"{item[0]} | {item[1]} | {item[2]}"
-            )
+            st.write(f"{item[0]} | {item[1]} | {item[2]}")
 
     # -------- DATE CHOICE -------- #
 
-    today = date.today()
-
+    # Fetch today's date based precisely on IST time
+    today = datetime.now(IST).date()
     tomorrow = today + timedelta(days=1)
 
     selected_date = st.radio(
         "Choose Booking Day",
         [today, tomorrow],
-        format_func=lambda x:
-        x.strftime("%A %d %B")
+        format_func=lambda x: x.strftime("%A %d %B")
     )
 
     # -------- GENERATE SLOTS -------- #
 
     slots = []
 
-    start = datetime.strptime(
-        "00:00",
-        "%H:%M"
-    )
+    start = datetime.strptime("00:00", "%H:%M")
+    end = datetime.strptime("23:59", "%H:%M")
 
-    end = datetime.strptime(
-        "23:59",
-        "%H:%M"
-    )
-
-    now = datetime.now()
+    # Get the current time in IST to filter past slots out
+    now_ist = datetime.now(IST)
 
     while start < end:
+        slot_str = start.strftime("%I:%M %p")
 
-        slot_str = start.strftime(
-            "%I:%M %p"
-        )
-
-        # Hide past slots today
+        # Hide past slots today based on India Time
         if selected_date == today:
-
-            if start.time() > now.time():
-
+            if start.time() > now_ist.time():
                 slots.append(slot_str)
-
         else:
-
             slots.append(slot_str)
 
         start += timedelta(minutes=30)
@@ -286,9 +247,7 @@ else:
         (str(selected_date),)
     )
 
-    booked_slots = [
-        x[0] for x in c.fetchall()
-    ]
+    booked_slots = [x[0] for x in c.fetchall()]
 
     # -------- GET YOUR SLOTS -------- #
 
@@ -299,15 +258,10 @@ else:
         WHERE username=?
         AND booking_date=?
         """,
-        (
-            st.session_state.username,
-            str(selected_date)
-        )
+        (st.session_state.username, str(selected_date))
     )
 
-    your_slots = [
-        x[0] for x in c.fetchall()
-    ]
+    your_slots = [x[0] for x in c.fetchall()]
 
     # -------- SLOT LEGEND -------- #
 
@@ -329,25 +283,15 @@ else:
 
             # YOUR SLOT
             if slot in your_slots:
-
-                st.info(
-                    f"🟦 {slot}"
-                )
+                st.info(f"🟦 {slot}")
 
             # BOOKED SLOT
             elif slot in booked_slots:
-
-                st.error(
-                    f"🟥 {slot}"
-                )
+                st.error(f"🟥 {slot}")
 
             # AVAILABLE SLOT
             else:
-
-                if st.button(
-                    f"🟩 {slot}",
-                    key=f"slot_{slot}"
-                ):
+                if st.button(f"🟩 {slot}", key=f"slot_{slot}"):
 
                     # Double-check slot
                     c.execute(
@@ -357,22 +301,14 @@ else:
                         WHERE booking_date=?
                         AND slot=?
                         """,
-                        (
-                            str(selected_date),
-                            slot
-                        )
+                        (str(selected_date), slot)
                     )
 
                     already_booked = c.fetchone()
 
                     if already_booked:
-
-                        st.error(
-                            "Slot already booked"
-                        )
-
+                        st.error("Slot already booked")
                     else:
-
                         # Count bookings for THIS DAY
                         c.execute(
                             """
@@ -381,41 +317,25 @@ else:
                             WHERE username=?
                             AND booking_date=?
                             """,
-                            (
-                                st.session_state.username,
-                                str(selected_date)
-                            )
+                            (st.session_state.username, str(selected_date))
                         )
 
                         booking_count = c.fetchone()[0]
 
                         # Max 3 bookings per day
                         if booking_count >= 3:
-
-                            st.error(
-                                "Maximum 3 bookings per day"
-                            )
-
+                            st.error("Maximum 3 bookings per day")
                         else:
-
                             c.execute(
                                 """
                                 INSERT INTO bookings
                                 VALUES (?, ?, ?)
                                 """,
-                                (
-                                    st.session_state.username,
-                                    str(selected_date),
-                                    slot
-                                )
+                                (st.session_state.username, str(selected_date), slot)
                             )
 
                             conn.commit()
-
-                            st.success(
-                                f"Booked {slot}"
-                            )
-
+                            st.success(f"Booked {slot}")
                             st.rerun()
 
     # -------- USER BOOKINGS -------- #
@@ -437,26 +357,17 @@ else:
     if user_bookings:
 
         for booking in user_bookings:
-
             rowid = booking[0]
-            booking_date = booking[1]
+            booking_date_str = booking[1]
             slot = booking[2]
 
             col1, col2 = st.columns([3, 1])
 
             with col1:
-
-                st.write(
-                    f"📌 {booking_date} at {slot}"
-                )
+                st.write(f"📌 {booking_date_str} at {slot}")
 
             with col2:
-
-                if st.button(
-                    "Cancel",
-                    key=f"cancel_{rowid}"
-                ):
-
+                if st.button("Cancel", key=f"cancel_{rowid}"):
                     c.execute(
                         """
                         DELETE FROM bookings
@@ -466,24 +377,14 @@ else:
                     )
 
                     conn.commit()
-
-                    st.success(
-                        "Booking cancelled"
-                    )
-
+                    st.success("Booking cancelled")
                     st.rerun()
-
     else:
-
-        st.write(
-            "No bookings yet"
-        )
+        st.write("No bookings yet")
 
     # -------- LOGOUT -------- #
 
     if st.button("Logout"):
-
         st.session_state.logged_in = False
         st.session_state.username = ""
-
         st.rerun()
