@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo  # Built-in timezone support (Python 3.9+)
 
 st.set_page_config(
-    page_title="Booking Scheduler",
+    page_title="Badminton Court Booking Scheduler",
     page_icon="📅",
     layout="wide"
 )
@@ -83,7 +83,7 @@ if "username" not in st.session_state:
 
 # ---------------- TITLE ---------------- #
 
-st.title("📅 Booking Scheduler")
+st.title("📅Badminton Court Booking Scheduler")
 
 # ---------------- LOGIN / SIGNUP ---------------- #
 
