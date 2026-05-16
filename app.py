@@ -1,6 +1,7 @@
 import streamlit as st
 import sqlite3
 import bcrypt
+import secrets  # For generating cryptographically secure session tokens
 from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo  # Built-in timezone support (Python 3.9+)
 
@@ -39,9 +40,18 @@ CREATE TABLE IF NOT EXISTS bookings (
 )
 """)
 
+# Persistent Session Tokens table (Keeps users logged in safely)
+c.execute("""
+CREATE TABLE IF NOT EXISTS sessions (
+    token TEXT PRIMARY KEY,
+    username TEXT,
+    created_at TEXT
+)
+""")
+
 conn.commit()
 
-# ---------------- REMOVE EXPIRED BOOKINGS ---------------- #
+# ---------------- REMOVE EXPIRED BOOKINGS & SESSIONS ---------------- #
 
 # Fetch current time in IST
 now = datetime.now(IST)
@@ -73,13 +83,31 @@ for booking in all_bookings:
 
 conn.commit()
 
-# ---------------- SESSION ---------------- #
+# ---------------- SECURE AUTOMATIC LOGIN INTERCEPTOR ---------------- #
 
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 
 if "username" not in st.session_state:
     st.session_state.username = ""
+
+# If the browser URL contains a token and the session isn't loaded yet, try to auto-login
+if "token" in st.query_params and not st.session_state.logged_in:
+    url_token = st.query_params["token"]
+    
+    c.execute("SELECT username FROM sessions WHERE token=?", (url_token,))
+    session_record = c.fetchone()
+    
+    if session_record:
+        # Extra verification step: Check if the user record still exists in the user registry
+        saved_username = session_record[0]
+        c.execute("SELECT username FROM users WHERE username=?", (saved_username,))
+        if c.fetchone():
+            st.session_state.logged_in = True
+            st.session_state.username = saved_username
+    else:
+        # Clean up stale or altered invalid tokens from the URL string
+        st.query_params.clear()
 
 # ---------------- TITLE ---------------- #
 
@@ -98,6 +126,9 @@ if not st.session_state.logged_in:
     # to completely recreate clean inputs when switching modes.
     username = st.text_input("Username", key=f"user_{menu}").strip()
     password = st.text_input("Password", type="password", key=f"pass_{menu}")
+    
+    # Add persistent session opt-in option directly inside the Auth Block UI
+    remember_me = st.checkbox("Keep me logged in", key=f"remember_{menu}")
 
     # -------- SIGN UP -------- #
 
@@ -158,6 +189,19 @@ if not st.session_state.logged_in:
                 ):
                     st.session_state.logged_in = True
                     st.session_state.username = username
+                    
+                    # If checked, generate a secure random token string, register it to the DB, and inject into URL
+                    if remember_me:
+                        secure_token = secrets.token_urlsafe(32)
+                        current_timestamp = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+                        
+                        c.execute(
+                            "INSERT INTO sessions (token, username, created_at) VALUES (?, ?, ?)",
+                            (secure_token, username, current_timestamp)
+                        )
+                        conn.commit()
+                        st.query_params["token"] = secure_token
+                    
                     st.rerun()
                 else:
                     st.error("Wrong password")
@@ -239,6 +283,8 @@ else:
                         c.execute("DELETE FROM users WHERE username=?", (user_to_manage,))
                         # Cascade delete user bookings so they don't block slots forever
                         c.execute("DELETE FROM bookings WHERE username=?", (user_to_manage,))
+                        # Clear any persistent session tokens linked to this deleted account
+                        c.execute("DELETE FROM sessions WHERE username=?", (user_to_manage,))
                         conn.commit()
                         st.success(f"Account '{user_to_manage}' and active bookings cleared successfully.")
                         st.rerun()
@@ -443,6 +489,13 @@ else:
     # -------- LOGOUT -------- #
     st.divider()
     if st.button("Logout", type="primary"):
+        # If logged in via a keep-alive token, purge it from the database table completely
+        if "token" in st.query_params:
+            c.execute("DELETE FROM sessions WHERE token=?", (st.query_params["token"],))
+            conn.commit()
+            
+        # Clean up session state and URL traces completely
         st.session_state.logged_in = False
         st.session_state.username = ""
+        st.query_params.clear()
         st.rerun()
