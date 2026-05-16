@@ -61,7 +61,7 @@ for booking in all_bookings:
     # Parse and explicitly attach the IST timezone to the database record
     booking_datetime = datetime.strptime(
         f"{booking_date} {slot}",
-        %Y-%m-%d %I:%M %p"
+        "%Y-%m-%d %I:%M %p"
     ).replace(tzinfo=IST)
 
     # Remove expired bookings securely comparing aware datetimes
@@ -228,7 +228,7 @@ else:
         
         if all_users:
             for user_to_manage in all_users:
-                # Don't let the admin accidentally delete their own admin account here
+                # Prevent the admin from deleting their own admin account
                 if user_to_manage == "admin":
                     continue
                     
@@ -236,14 +236,13 @@ else:
                 with u_col1:
                     st.write(f"👤 User: **{user_to_manage}**")
                 with u_col2:
-                    # Unique key generation per user row
-                    if st.button(f"Delete Account", key=f"del_user_{user_to_manage}", type="secondary"):
-                        # 1. Delete user record
+                    if st.button("Delete Account", key=f"del_user_{user_to_manage}", type="secondary"):
+                        # Delete user account record
                         c.execute("DELETE FROM users WHERE username=?", (user_to_manage,))
-                        # 2. Delete user's active bookings (Cascading cleanup)
+                        # Cascade delete user bookings so they don't block slots forever
                         c.execute("DELETE FROM bookings WHERE username=?", (user_to_manage,))
                         conn.commit()
-                        st.success(f"Account '{user_to_manage}' and associated bookings successfully removed.")
+                        st.success(f"Account '{user_to_manage}' and active bookings cleared successfully.")
                         st.rerun()
         else:
             st.info("No user accounts found.")
@@ -347,7 +346,7 @@ else:
                 st.info(f"🟦 {slot}")
 
             # BOOKED SLOT
-            if slot in booked_slots:
+            elif slot in booked_slots:
                 st.error(f"🟥 {slot}")
 
             # AVAILABLE SLOT
