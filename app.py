@@ -81,6 +81,10 @@ if "logged_in" not in st.session_state:
 if "username" not in st.session_state:
     st.session_state.username = ""
 
+# Keep track of previous menu mode to intercept layout switching
+if "prev_menu_mode" not in st.session_state:
+    st.session_state.prev_menu_mode = "Login"
+
 # ---------------- TITLE ---------------- #
 
 st.title("📅 Badminton Court Booking Scheduler")
@@ -91,15 +95,23 @@ if not st.session_state.logged_in:
 
     menu = st.selectbox(
         "Menu",
-        ["Login", "Sign Up"]
+        ["Login", "Sign Up"],
+        key="current_menu_mode"
     )
 
-    username = st.text_input("Username").strip()
+    # --- FIX: INTERCEPT MENU SWITCH & WIPE ---
+    if menu != st.session_state.prev_menu_mode:
+        if "login_user" in st.session_state:
+            del st.session_state["login_user"]
+        if "login_pass" in st.session_state:
+            del st.session_state["login_pass"]
+        st.session_state.prev_menu_mode = menu
+        st.rerun()
+    # -----------------------------------------
 
-    password = st.text_input(
-        "Password",
-        type="password"
-    )
+    # Added session keys directly to the components
+    username = st.text_input("Username", key="login_user").strip()
+    password = st.text_input("Password", type="password", key="login_pass")
 
     # -------- SIGN UP -------- #
 
@@ -133,7 +145,11 @@ if not st.session_state.logged_in:
                         )
                     )
                     conn.commit()
-                    st.success("Account created!")
+                    st.success("Account created! You can now switch to Login.")
+                    
+                    # Clear out the registration fields upon success
+                    if "login_user" in st.session_state: del st.session_state["login_user"]
+                    if "login_pass" in st.session_state: del st.session_state["login_pass"]
 
     # -------- LOGIN -------- #
 
