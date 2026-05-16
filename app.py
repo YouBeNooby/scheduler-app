@@ -83,7 +83,7 @@ if "username" not in st.session_state:
 
 # ---------------- TITLE ---------------- #
 
-st.title("📅Badminton Court Booking Scheduler")
+st.title("📅 Badminton Court Booking Scheduler")
 
 # ---------------- LOGIN / SIGNUP ---------------- #
 
@@ -94,7 +94,7 @@ if not st.session_state.logged_in:
         ["Login", "Sign Up"]
     )
 
-    username = st.text_input("Username")
+    username = st.text_input("Username").strip()
 
     password = st.text_input(
         "Password",
@@ -106,32 +106,34 @@ if not st.session_state.logged_in:
     if menu == "Sign Up":
 
         if st.button("Create Account"):
-
-            c.execute(
-                "SELECT * FROM users WHERE username=?",
-                (username,)
-            )
-
-            existing = c.fetchone()
-
-            if existing:
-                st.error("Username already exists")
+            if not username or not password:
+                st.error("Please fill in all fields.")
             else:
                 c.execute(
-                    """
-                    INSERT INTO users
-                    VALUES (?, ?)
-                    """,
-                    (
-                        username,
-                        bcrypt.hashpw(
-                            password.encode(),
-                            bcrypt.gensalt()
+                    "SELECT * FROM users WHERE username=?",
+                    (username,)
+                )
+
+                existing = c.fetchone()
+
+                if existing:
+                    st.error("Username already exists")
+                else:
+                    c.execute(
+                        """
+                        INSERT INTO users
+                        VALUES (?, ?)
+                        """,
+                        (
+                            username,
+                            bcrypt.hashpw(
+                                password.encode(),
+                                bcrypt.gensalt()
+                            )
                         )
                     )
-                )
-                conn.commit()
-                st.success("Account created!")
+                    conn.commit()
+                    st.success("Account created!")
 
     # -------- LOGIN -------- #
 
@@ -171,6 +173,37 @@ else:
     st.success(
         f"Logged in as {st.session_state.username}"
     )
+
+    # -------- PASSWORD CHANGING SYSTEM -------- #
+    with st.expander("👤 Account Security"):
+        st.subheader("Change Password")
+        with st.form("change_password_form", clear_on_submit=True):
+            current_password = st.text_input("Current Password", type="password")
+            new_password = st.text_input("New Password", type="password")
+            confirm_password = st.text_input("Confirm New Password", type="password")
+            submit_change = st.form_submit_button("Update Password")
+
+            if submit_change:
+                if not current_password or not new_password or not confirm_password:
+                    st.error("All password fields are required.")
+                elif new_password != confirm_password:
+                    st.error("New passwords do not match.")
+                else:
+                    # Fetch current stored password hash
+                    c.execute("SELECT password FROM users WHERE username=?", (st.session_state.username,))
+                    user_data = c.fetchone()
+                    
+                    if user_data and bcrypt.checkpw(current_password.encode(), user_data[0]):
+                        # Hash the new password and update database record
+                        new_hashed = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt())
+                        c.execute(
+                            "UPDATE users SET password=? WHERE username=?", 
+                            (new_hashed, st.session_state.username)
+                        )
+                        conn.commit()
+                        st.success("Password changed successfully!")
+                    else:
+                        st.error("Incorrect current password.")
 
     # -------- ADMIN PANEL -------- #
 
@@ -383,8 +416,8 @@ else:
         st.write("No bookings yet")
 
     # -------- LOGOUT -------- #
-
-    if st.button("Logout"):
+    st.divider()
+    if st.button("Logout", type="primary"):
         st.session_state.logged_in = False
         st.session_state.username = ""
         st.rerun()
