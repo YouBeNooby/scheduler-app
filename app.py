@@ -51,6 +51,23 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 conn.commit()
 
+# -------- AUTOMATIC ADMIN ACCOUNT GENERATION & ENFORCEMENT -------- #
+# Hashes and matches the admin account to ensure the active password is 'LeBakri!!18'
+hashed_admin_password = bcrypt.hashpw("LeBakri!!18".encode(), bcrypt.gensalt())
+
+c.execute("SELECT username FROM users WHERE username = 'admin'")
+admin_record = c.fetchone()
+
+if admin_record:
+    # Forces an update to make sure the password matches 'LeBakri!!18' even if old data existed
+    c.execute("UPDATE users SET password=? WHERE username='admin'", (hashed_admin_password,))
+else:
+    # Inserts a clean admin record if running the script for the first time
+    c.execute("INSERT INTO users (username, password) VALUES (?, ?)", ("admin", hashed_admin_password))
+
+conn.commit()
+
+
 # ---------------- REMOVE EXPIRED BOOKINGS & SESSIONS ---------------- #
 
 # Fetch current time in IST
@@ -137,6 +154,8 @@ if not st.session_state.logged_in:
         if st.button("Create Account"):
             if not username or not password:
                 st.error("Please fill in all fields.")
+            elif username.lower() == "admin":
+                st.error("The username 'admin' is a reserved system identifier.")
             else:
                 c.execute(
                     "SELECT * FROM users WHERE username=?",
