@@ -139,7 +139,10 @@ if not st.session_state.logged_in:
     username = st.text_input("Username", key=f"user_{menu}").strip()
     password = st.text_input("Password", type="password", key=f"pass_{menu}")
     
-    remember_me = st.checkbox("Keep me logged in", key=f"remember_{menu}")
+    # Only show the "Keep me logged in" checkbox if the menu mode is Login
+    remember_me = False
+    if menu == "Login":
+        remember_me = st.checkbox("Keep me logged in", key="remember_Login")
 
     # -------- SIGN UP -------- #
 
