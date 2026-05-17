@@ -4,6 +4,8 @@ from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo  # Built-in timezone support (Python 3.9+)
 import hashlib
 from sqlalchemy import text
+import pandas as pd
+import extra_streamlit_components as stx
 
 st.set_page_config(
     page_title="Booking Scheduler",
@@ -98,7 +100,7 @@ if not all_bookings_df.empty:
                 session.execute(text("DELETE FROM bookings WHERE id=:id"), {"id": bid})
         session.commit()
 
-# ---------------- SECURE AUTOMATIC LOGIN INTERCEPTOR ---------------- #
+# ---------------- BASELINE STATE INITIALIZATION ---------------- #
 
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
@@ -106,22 +108,31 @@ if "logged_in" not in st.session_state:
 if "username" not in st.session_state:
     st.session_state.username = ""
 
-# If the browser URL contains a token and the session isn't loaded yet, try to auto-login
-if "token" in st.query_params and not st.session_state.logged_in:
-    url_token = st.query_params["token"]
+# Initialize Cookie Manager
+cookie_manager = stx.CookieManager()
+
+# BROWSER COOKIE AUTO-LOGIN INTERCEPTOR
+if not st.session_state.logged_in:
+    # Read cookie directly from the user's browser hard drive
+    cookie_token = cookie_manager.get(cookie="badminton_scheduler_token")
     
-    session_df = conn.query("SELECT username FROM sessions WHERE token=:t", params={"t": url_token}, ttl=0)
-    
-    if not session_df.empty:
-        saved_username = session_df.iloc[0]["username"]
-        # Extra verification step: Check if the user record still exists in the user registry
-        user_check_df = conn.query("SELECT username FROM users WHERE username=:u", params={"u": saved_username}, ttl=0)
-        if not user_check_df.empty:
-            st.session_state.logged_in = True
-            st.session_state.username = saved_username
-    else:
-        # Clean up stale or altered invalid tokens from the URL string
-        st.query_params.clear()
+    if cookie_token:
+        # Crosscheck cookie validation key securely with Supabase database logs
+        session_df = conn.query("SELECT username FROM sessions WHERE token=:t", params={"t": cookie_token}, ttl=0)
+        
+        if not session_df.empty:
+            saved_username = session_df.iloc[0]["username"]
+            # Extra verification step: Check if the user record still exists in the user registry
+            user_check_df = conn.query("SELECT username FROM users WHERE username=:u", params={"u": saved_username}, ttl=0)
+            if not user_check_df.empty:
+                st.session_state.logged_in = True
+                st.session_state.username = saved_username
+        else:
+            # Clean up invalid or tampered client cookies safely
+            cookie_manager.delete(cookie="badminton_scheduler_token")
+
+# Ensure URL parameter hacks are completely locked down
+st.query_params.clear()
 
 # ---------------- TITLE ---------------- #
 
@@ -189,14 +200,22 @@ if not st.session_state.logged_in:
                         secure_token = secrets.token_urlsafe(32)
                         current_timestamp = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
                         
+                        # Write tracking mapping to backend database
                         with conn.session as session:
                             session.execute(
                                 text("INSERT INTO sessions (token, username, created_at) VALUES (:t, :u, :c)"),
                                 {"t": secure_token, "u": username, "c": current_timestamp}
                             )
                             session.commit()
-                        st.query_params["token"] = secure_token
+                            
+                        # Store a persistent cookie on client browser configuration expiring in 30 days
+                        cookie_manager.set(
+                            cookie="badminton_scheduler_token",
+                            val=secure_token,
+                            expires_at=datetime.now() + pd.Timedelta(days=30)
+                        )
                     
+                    st.query_params.clear()
                     st.rerun()
                 else:
                     st.error("Wrong password")
@@ -414,10 +433,14 @@ else:
     # -------- LOGOUT -------- #
     st.divider()
     if st.button("Logout", type="primary"):
-        if "token" in st.query_params:
+        # Fetch cookie values to delete session keys securely out of Supabase
+        active_cookie = cookie_manager.get(cookie="badminton_scheduler_token")
+        if active_cookie:
             with conn.session as session:
-                session.execute(text("DELETE FROM sessions WHERE token=:t"), {"t": st.query_params["token"]})
+                session.execute(text("DELETE FROM sessions WHERE token=:t"), {"t": active_cookie})
                 session.commit()
+            # Explicitly delete the cookie file off the client browser storage
+            cookie_manager.delete(cookie="badminton_scheduler_token")
             
         st.session_state.logged_in = False
         st.session_state.username = ""
