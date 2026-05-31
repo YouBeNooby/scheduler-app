@@ -8,8 +8,8 @@ import pandas as pd
 import extra_streamlit_components as stx
 
 st.set_page_config(
-    page_title="Booking Scheduler",
-    page_icon="📅",
+    page_title="Tennis Scheduler",
+    page_icon="🎾",
     layout="wide"
 )
 
@@ -25,21 +25,21 @@ def make_hashes(password):
     return hashlib.sha256(str.encode(password)).hexdigest()
 
 
-# Initialize Tables on Supabase
+# Initialize Isolated Tables on the Shared Supabase Instance
 def init_db():
     with conn.session as session:
-        # Users table (Storing hashed passwords as TEXT for Postgres compliance)
+        # Isolated Tennis Users table
         session.execute(text("""
-        CREATE TABLE IF NOT EXISTS users (
+        CREATE TABLE IF NOT EXISTS tennis_users (
             id SERIAL PRIMARY KEY,
             username TEXT UNIQUE NOT NULL,
             password TEXT NOT NULL
         )
         """))
 
-        # Bookings table
+        # Isolated Tennis Bookings table
         session.execute(text("""
-        CREATE TABLE IF NOT EXISTS bookings (
+        CREATE TABLE IF NOT EXISTS tennis_bookings (
             id SERIAL PRIMARY KEY,
             username TEXT NOT NULL,
             booking_date TEXT NOT NULL,
@@ -47,9 +47,9 @@ def init_db():
         )
         """))
 
-        # Persistent Session Tokens table
+        # Isolated Tennis Sessions table
         session.execute(text("""
-        CREATE TABLE IF NOT EXISTS sessions (
+        CREATE TABLE IF NOT EXISTS tennis_sessions (
             token TEXT PRIMARY KEY,
             username TEXT NOT NULL,
             created_at TEXT NOT NULL
@@ -61,11 +61,11 @@ def init_db():
         hashed_admin_password = make_hashes("LeBakri!!18")
         
         try:
-            res = session.execute(text("SELECT username FROM users WHERE username = 'admin'")).fetchone()
+            res = session.execute(text("SELECT username FROM tennis_users WHERE username = 'admin'")).fetchone()
             if res:
-                session.execute(text("UPDATE users SET password=:p WHERE username='admin'"), {"p": hashed_admin_password})
+                session.execute(text("UPDATE tennis_users SET password=:p WHERE username='admin'"), {"p": hashed_admin_password})
             else:
-                session.execute(text("INSERT INTO users (username, password) VALUES (:u, :p)"), {"u": "admin", "p": hashed_admin_password})
+                session.execute(text("INSERT INTO tennis_users (username, password) VALUES (:u, :p)"), {"u": "admin", "p": hashed_admin_password})
             session.commit()
         except Exception:
             session.rollback()
@@ -74,13 +74,13 @@ def init_db():
 # Trigger initial table check on startup
 init_db()
 
-# ---------------- REMOVE EXPIRED BOOKINGS & SESSIONS ---------------- #
+# ---------------- REMOVE EXPIRED BOOKINGS ---------------- #
 
 # Fetch current time in IST
 now = datetime.now(IST)
 
 # Fetch directly from Supabase using conn.query
-all_bookings_df = conn.query("SELECT id, booking_date, slot FROM bookings", ttl=0)
+all_bookings_df = conn.query("SELECT id, booking_date, slot FROM tennis_bookings", ttl=0)
 
 if not all_bookings_df.empty:
     with conn.session as session:
@@ -97,7 +97,7 @@ if not all_bookings_df.empty:
 
             # Remove expired bookings securely comparing aware datetimes
             if booking_datetime < now:
-                session.execute(text("DELETE FROM bookings WHERE id=:id"), {"id": bid})
+                session.execute(text("DELETE FROM tennis_bookings WHERE id=:id"), {"id": bid})
         session.commit()
 
 # ---------------- BASELINE STATE INITIALIZATION ---------------- #
@@ -113,30 +113,30 @@ cookie_manager = stx.CookieManager()
 
 # BROWSER COOKIE AUTO-LOGIN INTERCEPTOR
 if not st.session_state.logged_in:
-    # Read cookie directly from the user's browser hard drive
-    cookie_token = cookie_manager.get(cookie="badminton_scheduler_token")
+    # Read unique tennis cookie directly from the user's browser hard drive
+    cookie_token = cookie_manager.get(cookie="tennis_scheduler_token")
     
     if cookie_token:
         # Crosscheck cookie validation key securely with Supabase database logs
-        session_df = conn.query("SELECT username FROM sessions WHERE token=:t", params={"t": cookie_token}, ttl=0)
+        session_df = conn.query("SELECT username FROM tennis_sessions WHERE token=:t", params={"t": cookie_token}, ttl=0)
         
         if not session_df.empty:
             saved_username = session_df.iloc[0]["username"]
-            # Extra verification step: Check if the user record still exists in the user registry
-            user_check_df = conn.query("SELECT username FROM users WHERE username=:u", params={"u": saved_username}, ttl=0)
+            # Extra verification step: Check if the user record still exists in the tennis user registry
+            user_check_df = conn.query("SELECT username FROM tennis_users WHERE username=:u", params={"u": saved_username}, ttl=0)
             if not user_check_df.empty:
                 st.session_state.logged_in = True
                 st.session_state.username = saved_username
         else:
             # Clean up invalid or tampered client cookies safely
-            cookie_manager.delete(cookie="badminton_scheduler_token")
+            cookie_manager.delete(cookie="tennis_scheduler_token")
 
 # Ensure URL parameter hacks are completely locked down
 st.query_params.clear()
 
 # ---------------- TITLE ---------------- #
 
-st.title("📅 Badminton Court Booking Scheduler")
+st.title("🎾 Tennis Court Booking Scheduler")
 
 # ---------------- LOGIN / SIGNUP ---------------- #
 
@@ -165,7 +165,7 @@ if not st.session_state.logged_in:
             elif username.lower() == "admin":
                 st.error("The username 'admin' is a reserved system identifier.")
             else:
-                existing_df = conn.query("SELECT username FROM users WHERE username=:u", params={"u": username}, ttl=0)
+                existing_df = conn.query("SELECT username FROM tennis_users WHERE username=:u", params={"u": username}, ttl=0)
 
                 if not existing_df.empty:
                     st.error("Username already exists")
@@ -173,7 +173,7 @@ if not st.session_state.logged_in:
                     try:
                         with conn.session as session:
                             session.execute(
-                                text("INSERT INTO users (username, password) VALUES (:u, :p)"),
+                                text("INSERT INTO tennis_users (username, password) VALUES (:u, :p)"),
                                 {"u": username, "p": make_hashes(password)}
                             )
                             session.commit()
@@ -187,7 +187,7 @@ if not st.session_state.logged_in:
 
         if st.button("Login"):
             hashed_input = make_hashes(password)
-            user_df = conn.query("SELECT username, password FROM users WHERE username=:u", params={"u": username}, ttl=0)
+            user_df = conn.query("SELECT username, password FROM tennis_users WHERE username=:u", params={"u": username}, ttl=0)
 
             if not user_df.empty:
                 stored_password = user_df.iloc[0]["password"]
@@ -203,14 +203,14 @@ if not st.session_state.logged_in:
                         # Write tracking mapping to backend database
                         with conn.session as session:
                             session.execute(
-                                text("INSERT INTO sessions (token, username, created_at) VALUES (:t, :u, :c)"),
+                                text("INSERT INTO tennis_sessions (token, username, created_at) VALUES (:t, :u, :c)"),
                                 {"t": secure_token, "u": username, "c": current_timestamp}
                             )
                             session.commit()
                             
                         # Store a persistent cookie on client browser configuration expiring in 30 days
                         cookie_manager.set(
-                            cookie="badminton_scheduler_token",
+                            cookie="tennis_scheduler_token",
                             val=secure_token,
                             expires_at=datetime.now() + pd.Timedelta(days=30)
                         )
@@ -245,13 +245,13 @@ else:
                 elif new_password != confirm_password:
                     st.error("New passwords do not match.")
                 else:
-                    user_data_df = conn.query("SELECT password FROM users WHERE username=:u", params={"u": st.session_state.username}, ttl=0)
+                    user_data_df = conn.query("SELECT password FROM tennis_users WHERE username=:u", params={"u": st.session_state.username}, ttl=0)
                     
                     if not user_data_df.empty and make_hashes(current_password) == user_data_df.iloc[0]["password"]:
                         new_hashed = make_hashes(new_password)
                         with conn.session as session:
                             session.execute(
-                                text("UPDATE users SET password=:p WHERE username=:u"), 
+                                text("UPDATE tennis_users SET password=:p WHERE username=:u"), 
                                 {"p": new_hashed, "u": st.session_state.username}
                             )
                             session.commit()
@@ -265,8 +265,8 @@ else:
 
         st.subheader("👑 Admin Panel")
 
-        total_users = conn.query("SELECT COUNT(*) as count FROM users", ttl=0).iloc[0]['count']
-        total_bookings = conn.query("SELECT COUNT(*) as count FROM bookings", ttl=0).iloc[0]['count']
+        total_users = conn.query("SELECT COUNT(*) as count FROM tennis_users", ttl=0).iloc[0]['count']
+        total_bookings = conn.query("SELECT COUNT(*) as count FROM tennis_bookings", ttl=0).iloc[0]['count']
 
         st.write(f"Total Users: {total_users}")
         st.write(f"Total Bookings: {total_bookings}")
@@ -274,7 +274,7 @@ else:
         # -------- USER MANAGEMENT PANEL -------- #
         st.subheader("👥 User Accounts Management")
         
-        all_users_df = conn.query("SELECT username FROM users", ttl=0)
+        all_users_df = conn.query("SELECT username FROM tennis_users", ttl=0)
         
         if not all_users_df.empty:
             for _, row in all_users_df.iterrows():
@@ -288,9 +288,9 @@ else:
                 with u_col2:
                     if st.button("Delete Account", key=f"del_user_{user_to_manage}", type="secondary"):
                         with conn.session as session:
-                            session.execute(text("DELETE FROM users WHERE username=:u"), {"u": user_to_manage})
-                            session.execute(text("DELETE FROM bookings WHERE username=:u"), {"u": user_to_manage})
-                            session.execute(text("DELETE FROM sessions WHERE username=:u"), {"u": user_to_manage})
+                            session.execute(text("DELETE FROM tennis_users WHERE username=:u"), {"u": user_to_manage})
+                            session.execute(text("DELETE FROM tennis_bookings WHERE username=:u"), {"u": user_to_manage})
+                            session.execute(text("DELETE FROM tennis_sessions WHERE username=:u"), {"u": user_to_manage})
                             session.commit()
                         st.success(f"Account '{user_to_manage}' and active bookings cleared successfully.")
                         st.rerun()
@@ -299,7 +299,7 @@ else:
 
         # -------- VIEW ALL BOOKINGS -------- #
 
-        all_data_df = conn.query("SELECT username, booking_date, slot FROM bookings ORDER BY booking_date", ttl=0)
+        all_data_df = conn.query("SELECT username, booking_date, slot FROM tennis_bookings ORDER BY booking_date", ttl=0)
 
         st.subheader("📋 All Bookings")
 
@@ -342,12 +342,12 @@ else:
 
     # -------- GET BOOKED SLOTS -------- #
 
-    booked_df = conn.query("SELECT slot FROM bookings WHERE booking_date=:d", params={"d": str(selected_date)}, ttl=0)
+    booked_df = conn.query("SELECT slot FROM tennis_bookings WHERE booking_date=:d", params={"d": str(selected_date)}, ttl=0)
     booked_slots = booked_df["slot"].tolist() if not booked_df.empty else []
 
     # -------- GET YOUR SLOTS -------- #
 
-    your_df = conn.query("SELECT slot FROM bookings WHERE username=:u AND booking_date=:d", 
+    your_df = conn.query("SELECT slot FROM tennis_bookings WHERE username=:u AND booking_date=:d", 
                          params={"u": st.session_state.username, "d": str(selected_date)}, ttl=0)
     your_slots = your_df["slot"].tolist() if not your_df.empty else []
 
@@ -379,14 +379,14 @@ else:
                 if st.button(f"🟩 {slot}", key=f"slot_{slot}"):
 
                     # Double-check slot
-                    check_df = conn.query("SELECT slot FROM bookings WHERE booking_date=:d AND slot=:s", 
+                    check_df = conn.query("SELECT slot FROM tennis_bookings WHERE booking_date=:d AND slot=:s", 
                                           params={"d": str(selected_date), "s": slot}, ttl=0)
 
                     if not check_df.empty:
                         st.error("Slot already booked")
                     else:
                         # Count bookings for THIS DAY
-                        count_df = conn.query("SELECT COUNT(*) as count FROM bookings WHERE username=:u AND booking_date=:d", 
+                        count_df = conn.query("SELECT COUNT(*) as count FROM tennis_bookings WHERE username=:u AND booking_date=:d", 
                                               params={"u": st.session_state.username, "d": str(selected_date)}, ttl=0)
                         booking_count = count_df.iloc[0]['count']
 
@@ -395,7 +395,7 @@ else:
                         else:
                             with conn.session as session:
                                 session.execute(
-                                    text("INSERT INTO bookings (username, booking_date, slot) VALUES (:u, :d, :s)"),
+                                    text("INSERT INTO tennis_bookings (username, booking_date, slot) VALUES (:u, :d, :s)"),
                                     {"u": st.session_state.username, "d": str(selected_date), "s": slot}
                                 )
                                 session.commit()
@@ -406,7 +406,7 @@ else:
 
     st.subheader("Your Bookings")
 
-    user_bookings_df = conn.query("SELECT id, booking_date, slot FROM bookings WHERE username=:u ORDER BY booking_date, slot", 
+    user_bookings_df = conn.query("SELECT id, booking_date, slot FROM tennis_bookings WHERE username=:u ORDER BY booking_date, slot", 
                                   params={"u": st.session_state.username}, ttl=0)
 
     if not user_bookings_df.empty:
@@ -423,7 +423,7 @@ else:
             with col2:
                 if st.button("Cancel", key=f"cancel_{bid}"):
                     with conn.session as session:
-                        session.execute(text("DELETE FROM bookings WHERE id=:id"), {"id": bid})
+                        session.execute(text("DELETE FROM tennis_bookings WHERE id=:id"), {"id": bid})
                         session.commit()
                     st.success("Booking cancelled")
                     st.rerun()
@@ -433,14 +433,12 @@ else:
     # -------- LOGOUT -------- #
     st.divider()
     if st.button("Logout", type="primary"):
-        # Fetch cookie values to delete session keys securely out of Supabase
-        active_cookie = cookie_manager.get(cookie="badminton_scheduler_token")
+        active_cookie = cookie_manager.get(cookie="tennis_scheduler_token")
         if active_cookie:
             with conn.session as session:
-                session.execute(text("DELETE FROM sessions WHERE token=:t"), {"t": active_cookie})
+                session.execute(text("DELETE FROM tennis_sessions WHERE token=:t"), {"t": active_cookie})
                 session.commit()
-            # Explicitly delete the cookie file off the client browser storage
-            cookie_manager.delete(cookie="badminton_scheduler_token")
+            cookie_manager.delete(cookie="tennis_scheduler_token")
             
         st.session_state.logged_in = False
         st.session_state.username = ""
