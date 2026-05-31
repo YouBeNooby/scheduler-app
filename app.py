@@ -430,7 +430,7 @@ else:
     else:
         st.write("No bookings yet")
 
-    # -------- LOGOUT -------- #
+    # -------- FIXED LOGOUT PIPELINE -------- #
     st.divider()
     if st.button("Logout", type="primary"):
         active_cookie = cookie_manager.get(cookie="tennis_scheduler_token")
@@ -438,8 +438,11 @@ else:
             with conn.session as session:
                 session.execute(text("DELETE FROM tennis_sessions WHERE token=:t"), {"t": active_cookie})
                 session.commit()
-            cookie_manager.delete(cookie="tennis_scheduler_token")
             
+            # Delete the token from the client's hard drive
+            cookie_manager.delete(cookie="tennis_scheduler_token")
+        
+        # Flush states out of session memory BEFORE rerunning to prevent a cycle deadlock
         st.session_state.logged_in = False
         st.session_state.username = ""
         st.query_params.clear()
