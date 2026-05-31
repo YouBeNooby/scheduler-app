@@ -8,8 +8,8 @@ import pandas as pd
 import extra_streamlit_components as stx
 
 st.set_page_config(
-    page_title="Tennis Scheduler",
-    page_icon="🎾",
+    page_title="Badminton Scheduler",
+    page_icon="🏸",
     layout="wide"
 )
 
@@ -28,7 +28,7 @@ def make_hashes(password):
 # Initialize Isolated Tables on the Shared Supabase Instance
 def init_db():
     with conn.session as session:
-        # Isolated Tennis Users table
+        # Isolated Badminton Users table
         session.execute(text("""
         CREATE TABLE IF NOT EXISTS tennis_users (
             id SERIAL PRIMARY KEY,
@@ -37,7 +37,7 @@ def init_db():
         )
         """))
 
-        # Isolated Tennis Bookings table
+        # Isolated Badminton Bookings table
         session.execute(text("""
         CREATE TABLE IF NOT EXISTS tennis_bookings (
             id SERIAL PRIMARY KEY,
@@ -47,7 +47,7 @@ def init_db():
         )
         """))
 
-        # Isolated Tennis Sessions table
+        # Isolated Badminton Sessions table
         session.execute(text("""
         CREATE TABLE IF NOT EXISTS tennis_sessions (
             token TEXT PRIMARY KEY,
@@ -113,8 +113,8 @@ cookie_manager = stx.CookieManager()
 
 # BROWSER COOKIE AUTO-LOGIN INTERCEPTOR
 if not st.session_state.logged_in:
-    # Read unique tennis cookie directly from the user's browser hard drive
-    cookie_token = cookie_manager.get(cookie="tennis_scheduler_token")
+    # Read unique badminton cookie directly from the user's browser hard drive
+    cookie_token = cookie_manager.get(cookie="badminton_scheduler_token")
     
     if cookie_token:
         # Crosscheck cookie validation key securely with Supabase database logs
@@ -122,21 +122,21 @@ if not st.session_state.logged_in:
         
         if not session_df.empty:
             saved_username = session_df.iloc[0]["username"]
-            # Extra verification step: Check if the user record still exists in the tennis user registry
+            # Extra verification step: Check if the user record still exists in the user registry
             user_check_df = conn.query("SELECT username FROM tennis_users WHERE username=:u", params={"u": saved_username}, ttl=0)
             if not user_check_df.empty:
                 st.session_state.logged_in = True
                 st.session_state.username = saved_username
         else:
             # Clean up invalid or tampered client cookies safely
-            cookie_manager.delete(cookie="tennis_scheduler_token")
+            cookie_manager.delete(cookie="badminton_scheduler_token")
 
 # Ensure URL parameter hacks are completely locked down
 st.query_params.clear()
 
 # ---------------- TITLE ---------------- #
 
-st.title("🎾 Tennis Court Booking Scheduler")
+st.title("🏸 Badminton Court Booking Scheduler")
 
 # ---------------- LOGIN / SIGNUP ---------------- #
 
@@ -210,7 +210,7 @@ if not st.session_state.logged_in:
                             
                         # Store a persistent cookie on client browser configuration expiring in 30 days
                         cookie_manager.set(
-                            cookie="tennis_scheduler_token",
+                            cookie="badminton_scheduler_token",
                             val=secure_token,
                             expires_at=datetime.now() + pd.Timedelta(days=30)
                         )
@@ -433,14 +433,14 @@ else:
     # -------- FIXED LOGOUT PIPELINE -------- #
     st.divider()
     if st.button("Logout", type="primary"):
-        active_cookie = cookie_manager.get(cookie="tennis_scheduler_token")
+        active_cookie = cookie_manager.get(cookie="badminton_scheduler_token")
         if active_cookie:
             with conn.session as session:
                 session.execute(text("DELETE FROM tennis_sessions WHERE token=:t"), {"t": active_cookie})
                 session.commit()
             
             # Delete the token from the client's hard drive
-            cookie_manager.delete(cookie="tennis_scheduler_token")
+            cookie_manager.delete(cookie="badminton_scheduler_token")
         
         # Flush states out of session memory BEFORE rerunning to prevent a cycle deadlock
         st.session_state.logged_in = False
