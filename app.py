@@ -7,11 +7,64 @@ from sqlalchemy import text
 import pandas as pd
 import extra_streamlit_components as stx
 
+# ---------------- INITIAL VALUE LOOKUPS & BASELINE INTERCEPTIONS ---------------- #
+
+# 1. Initialize core state trackers before checking structural UI components
+if "court_config" not in st.session_state:
+    st.session_state.court_config = None
+
+if "username" not in st.session_state:
+    st.session_state.username = ""
+
+# ---------------- DATABASE CONNECTION ---------------- #
+
+conn = st.connection("postgresql", type="sql")
+
+# 2. ACTIVE ENFORCEMENT GUARD: Verification check to kick out stale user sessions if code gets deleted
+if st.session_state.court_config is not None:
+    active_code = st.session_state.court_config.get("access_code")
+    # Query database live to see if the admin has wiped this configuration key
+    check_active_df = conn.query("SELECT sport FROM tennis_court_configurations WHERE access_code=:ac", params={"ac": active_code}, ttl=0)
+    
+    if check_active_df.empty:
+        # Code no longer exists! Flush active session parameters state clean to redirect them to entry wall
+        st.session_state.court_config = None
+        st.warning("⚠️ The active session configuration key was deleted by an administrator. Please input an authenticated access code.")
+
+# 3. Define dynamic browser configuration maps based on active session context parameters
+dynamic_title = "Multi-Sport Arena Scheduler"
+dynamic_icon = "🏟️"
+
+if st.session_state.court_config is not None:
+    configured_sport = st.session_state.court_config["sport"].strip()
+    dynamic_title = f"{configured_sport} Scheduler"
+    
+    # Clean fallback normalization map matching sport labels to visual favicons
+    sport_emoji_map = {
+        "badminton": "🏸",
+        "tennis": "🎾",
+        "football": "⚽",
+        "soccer": "⚽",
+        "basketball": "🏀",
+        "squash": "🏓",
+        "swimming": "🏊",
+        "cricket": "🏏",
+        "volleyball": "🏐"
+    }
+    dynamic_icon = sport_emoji_map.get(configured_sport.lower(), "🏟️")
+elif st.session_state.username == "admin":
+    dynamic_title = "Admin Console Panel"
+    dynamic_icon = "👑"
+
+# 4. Securely deploy page layouts natively mapping structural components variables
 st.set_page_config(
-    page_title="Multi-Sport Arena Scheduler",
-    page_icon="🏸",
+    page_title=dynamic_title,
+    page_icon=dynamic_icon,
     layout="wide"
 )
+
+# Define IST Timezone
+IST = zoneinfo.ZoneInfo("Asia/Kolkata")
 
 # -------- TIMEZONE REGISTRY CONFIGURATOR -------- #
 @st.cache_resource
@@ -20,16 +73,10 @@ def get_all_timezones():
 
 all_tz_options = get_all_timezones()
 
-# Initialize dynamic timezone state mapping
 if "app_tz" not in st.session_state:
-    st.session_state.app_tz = "Asia/Kolkata"  # Default backup fallback
+    st.session_state.app_tz = "Asia/Kolkata"
 
-# Instantiate active ZoneInfo pointer wrapper object
 current_tz_info = zoneinfo.ZoneInfo(st.session_state.app_tz)
-
-# ---------------- DATABASE CONNECTION ---------------- #
-
-conn = st.connection("postgresql", type="sql")
 
 
 def make_hashes(password):
@@ -133,12 +180,6 @@ if not all_bookings_df.empty:
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 
-if "username" not in st.session_state:
-    st.session_state.username = ""
-
-if "court_config" not in st.session_state:
-    st.session_state.court_config = None  # Tracks dynamic dictionary maps: {"sport", "court_count", "access_code"}
-
 # Initialize the Cookie Manager cleanly without caching decorators to avoid CachedWidgetWarning
 def get_cookie_manager():
     try:
@@ -165,6 +206,7 @@ if not st.session_state.logged_in and cookie_manager:
                 if not user_check_df.empty:
                     st.session_state.logged_in = True
                     st.session_state.username = saved_username
+                    st.rerun()  # Rerun to sync dynamic page parameters allocation securely on login
             else:
                 # Clean up invalid or tampered client cookies safely
                 cookie_manager.delete(cookie="badminton_scheduler_token")
@@ -176,7 +218,7 @@ st.query_params.clear()
 
 # ---------------- TITLE ---------------- #
 
-st.title("🏟️ Stadium Management Portal")
+st.title(f"{dynamic_icon} {dynamic_title}")
 
 # ---------------- LOGIN / SIGNUP ---------------- #
 
@@ -395,9 +437,11 @@ else:
                     with c_col2:
                         if st.button("Delete Code Rule", key=f"del_code_{cfg_id}", type="secondary"):
                             with conn.session as session:
+                                # ✅ CASCADE FIX: When a configuration rule gets wiped out, purge all booking rows tied to that sport context as well
+                                session.execute(text("DELETE FROM tennis_bookings WHERE sport=:sp"), {"sp": cfg_sport})
                                 session.execute(text("DELETE FROM tennis_court_configurations WHERE id=:id"), {"id": cfg_id})
                                 session.commit()
-                            st.success(f"Configuration key '{cfg_code}' deleted from system databases.")
+                            st.success(f"Configuration key '{cfg_code}' and matching booking rows wiped from master logs.")
                             st.rerun()
             else:
                 st.info("No customized setup rules have been provisioned by the admin yet.")
@@ -435,6 +479,7 @@ else:
             total_bookings = conn.query("SELECT COUNT(*) as count FROM tennis_bookings", ttl=0).iloc[0]['count']
             st.write(f"Total Database Bookings: {total_bookings}")
             
+            # Master query pulling everything cleanly in order
             all_data_df = conn.query("SELECT username, booking_date, slot, court_number, sport FROM tennis_bookings ORDER BY booking_date DESC, slot ASC", ttl=0)
 
             if not all_data_df.empty:
@@ -477,7 +522,7 @@ else:
         current_sport = st.session_state.court_config["sport"]
         total_courts_to_render = st.session_state.court_config["court_count"]
 
-        st.markdown(f"## 🎯 Dynamic Workspace: **{current_sport}** (`{st.session_state.app_tz}` Time)")
+        st.markdown(f"## {dynamic_icon} Bounded Workspace: **{current_sport}** (`{st.session_state.app_tz}` Time)")
 
         # -------- DATE CHOICE -------- #
 
