@@ -7,14 +7,14 @@ from zoneinfo import ZoneInfo
 # --- INITIALIZATION & SUPABASE CONNECTION ---
 st.set_page_config(page_title="Court Scheduler", layout="wide")
 
-# Replace these with your actual Streamlit Secrets or Environment Variables
-SUPABASE_URL = st.secrets.get("SUPABASE_URL", "https://your-supabase-url.supabase.co")
-SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "your-anon-key")
+# Fetch strictly from Streamlit Cloud Secrets (returns None if missing)
+SUPABASE_URL = st.secrets.get("SUPABASE_URL")
+SUPABASE_KEY = st.secrets.get("SUPABASE_KEY")
 
 @st.cache_resource
 def init_supabase() -> Client or None:
-    # If the app is using default placeholders, don't attempt to connect (avoids httpx crash)
-    if "your-supabase-url" in SUPABASE_URL or "your-anon-key" in SUPABASE_KEY:
+    # If the admin hasn't set secrets in the Streamlit console, prevent code execution
+    if not SUPABASE_URL or not SUPABASE_KEY:
         return None
     try:
         return create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -44,8 +44,8 @@ def logout():
 
 # --- EARLY CONNECTION SAFETY CHECK ---
 if supabase is None:
-    st.error("🔌 **Database Connection Error**")
-    st.info("Your application is currently pointing to placeholder Supabase credentials. Please add your actual `SUPABASE_URL` and `SUPABASE_KEY` inside your Streamlit secrets configurations to launch the app.")
+    st.error("🔌 **Database Configuration Required**")
+    st.info("To activate this application, please open your Streamlit Dashboard, head to App Settings -> Secrets, and provide your `SUPABASE_URL` and `SUPABASE_KEY` configuration targets.")
     st.stop()
 
 # --- AUTHENTICATION FLOW ---
@@ -158,7 +158,6 @@ def render_admin_dashboard():
     configs_res = supabase.table("court_configurations").select("*").order("created_at", desc=True).execute()
     
     if configs_res.data:
-        # Render a clean comparison table for the admin
         st.table([{
             "Sport": c["sport"], 
             "Available Courts": c["court_count"], 
@@ -185,7 +184,6 @@ def render_user_scheduler():
     booked_slots = set()
     if bookings_res.data:
         for b in bookings_res.data:
-            # Storing tracking context as strings: "time_slot|court_number"
             booked_slots.add(f"{b['time_slot']}|{b.get('court_number', 1)}")
 
     # Standard available hour slots 
@@ -205,7 +203,6 @@ def render_user_scheduler():
                 else:
                     if st.button(f"🟢 Book {t_slot}", key=f"btn_{slot_id}"):
                         try:
-                            # Insert into your bookings table
                             supabase.table("bookings").insert({
                                 "user_id": st.session_state.user["id"],
                                 "booking_date": str(selected_date),
@@ -222,7 +219,6 @@ def render_user_scheduler():
 if st.session_state.user is None:
     render_login_and_registration()
 else:
-    # Sidebar Navigation & Context details
     with st.sidebar:
         st.write(f"👤 Account: **{st.session_state.user['username']}**")
         st.write(f"🛡️ Role: `{st.session_state.user['role'].upper()}`")
@@ -232,11 +228,9 @@ else:
         if st.button("Log Out and Clear Session"):
             logout()
             
-    # Check roles and branch execution
     if st.session_state.user["role"] == "admin":
         render_admin_dashboard()
     else:
-        # If normal user is logged in, force them through the access code gate first
         if st.session_state.court_config is None:
             render_access_code_gate()
         else:
