@@ -12,8 +12,14 @@ SUPABASE_URL = st.secrets.get("SUPABASE_URL", "https://your-supabase-url.supabas
 SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "your-anon-key")
 
 @st.cache_resource
-def init_supabase() -> Client:
-    return create_client(SUPABASE_URL, SUPABASE_KEY)
+def init_supabase() -> Client or None:
+    # If the app is using default placeholders, don't attempt to connect (avoids httpx crash)
+    if "your-supabase-url" in SUPABASE_URL or "your-anon-key" in SUPABASE_KEY:
+        return None
+    try:
+        return create_client(SUPABASE_URL, SUPABASE_KEY)
+    except Exception:
+        return None
 
 supabase = init_supabase()
 IST = ZoneInfo("Asia/Kolkata")
@@ -35,6 +41,12 @@ def logout():
     st.session_state.user = None
     st.session_state.court_config = None
     st.rerun()
+
+# --- EARLY CONNECTION SAFETY CHECK ---
+if supabase is None:
+    st.error("🔌 **Database Connection Error**")
+    st.info("Your application is currently pointing to placeholder Supabase credentials. Please add your actual `SUPABASE_URL` and `SUPABASE_KEY` inside your Streamlit secrets configurations to launch the app.")
+    st.stop()
 
 # --- AUTHENTICATION FLOW ---
 def render_login_and_registration():
