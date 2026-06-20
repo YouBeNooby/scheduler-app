@@ -69,7 +69,7 @@ def init_db():
         )
         """))
 
-        # Completely configurable access code mapping registry (with timezone column support)
+        # Completely configurable access code mapping registry
         session.execute(text("""
         CREATE TABLE IF NOT EXISTS tennis_court_configurations (
             id SERIAL PRIMARY KEY,
@@ -173,18 +173,6 @@ if not st.session_state.logged_in and cookie_manager:
 
 # Ensure URL parameter hacks are completely locked down
 st.query_params.clear()
-
-# ---------------- GLOBAL TIMEZONE PICKER SIDEBAR MODULE ---------------- #
-with st.sidebar:
-    st.markdown("### 🌎 System Localization")
-    selected_tz = st.selectbox(
-        "Application Timezone",
-        options=all_tz_options,
-        index=all_tz_options.index(st.session_state.app_tz) if st.session_state.app_tz in all_tz_options else 0
-    )
-    if selected_tz != st.session_state.app_tz:
-        st.session_state.app_tz = selected_tz
-        st.rerun()
 
 # ---------------- TITLE ---------------- #
 
@@ -327,7 +315,6 @@ else:
             courts_input = st.number_input("Total Courts / Fields Configured", min_value=1, max_value=24, value=2)
             code_input = st.text_input("Unique System Entry Code").strip()
             
-            # ✅ Configurable choice parameter to link custom time zones directly to the code object map
             tz_input = st.selectbox(
                 "Facility Local Timezone",
                 options=all_tz_options,
@@ -444,9 +431,8 @@ else:
                         "access_code": entered_code,
                         "timezone": config_tz
                     }
-                    # ✅ Sync global app timezone state directly to match the code's configuration properties
                     st.session_state.app_tz = config_tz
-                    st.success(f"Authorized! Opening customized workspace for: **{st.session_state.court_config['sport']}** in zone `{config_tz}`.")
+                    st.success(f"Authorized! Opening customized workspace for: **{st.session_state.court_config['sport']}**")
                     st.rerun()
                 else:
                     st.error("Invalid configuration credentials. Please double-check your code or consult your system administrator.")
@@ -509,7 +495,7 @@ else:
                 your_slots = your_df["slot"].tolist() if not your_df.empty else []
 
                 # -------- SLOT LEGEND -------- #
-                st.markdown("🟩 Available  |  🟥 Booked  |  %s" % ("🟦 Yours" if st.session_state.username != "admin" else "🟦 Admin"))
+                st.markdown("🟩 Available  |  🟥 Booked  |  🟦 Yours")
 
                 # -------- SLOT UI -------- #
                 st.subheader(f"Available Time Slices - Court #{court_idx}")
