@@ -3,5 +3,3 @@ pandas
 SQLAlchemy>=2.0.0
 psycopg2-binary
 extra-streamlit-components
-supabase>=2.0.0
-bcrypt
