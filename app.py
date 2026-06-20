@@ -1,237 +1,449 @@
 import streamlit as st
-from supabase import create_client, Client
-import bcrypt
-from datetime import datetime, date, time
-from zoneinfo import ZoneInfo
+import secrets  # For generating cryptographically secure session tokens
+from datetime import datetime, timedelta, date
+from zoneinfo import ZoneInfo  # Built-in timezone support (Python 3.9+)
+import hashlib
+from sqlalchemy import text
+import pandas as pd
+import extra_streamlit_components as stx
 
-# --- INITIALIZATION & SUPABASE CONNECTION ---
-st.set_page_config(page_title="Court Scheduler", layout="wide")
+st.set_page_config(
+    page_title="Badminton Scheduler",
+    page_icon="🏸",
+    layout="wide"
+)
 
-# Fetch strictly from Streamlit Cloud Secrets (returns None if missing)
-SUPABASE_URL = st.secrets.get("SUPABASE_URL")
-SUPABASE_KEY = st.secrets.get("SUPABASE_KEY")
-
-@st.cache_resource
-def init_supabase() -> Client or None:
-    # If the admin hasn't set secrets in the Streamlit console, prevent code execution
-    if not SUPABASE_URL or not SUPABASE_KEY:
-        return None
-    try:
-        return create_client(SUPABASE_URL, SUPABASE_KEY)
-    except Exception:
-        return None
-
-supabase = init_supabase()
+# Define IST Timezone
 IST = ZoneInfo("Asia/Kolkata")
 
-# Initialize persistent session states
-if "user" not in st.session_state:
-    st.session_state.user = None  # Holds dict: {"id":..., "username":..., "role":...}
-if "court_config" not in st.session_state:
-    st.session_state.court_config = None  # Holds dict: {"sport":..., "court_count":...}
+# ---------------- DATABASE CONNECTION ---------------- #
 
-# --- HELPER FUNCTIONS ---
-def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+conn = st.connection("postgresql", type="sql")
 
-def check_password(password: str, hashed: str) -> bool:
-    return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
 
-def logout():
-    st.session_state.user = None
-    st.session_state.court_config = None
-    st.rerun()
+def make_hashes(password):
+    return hashlib.sha256(str.encode(password)).hexdigest()
 
-# --- EARLY CONNECTION SAFETY CHECK ---
-if supabase is None:
-    st.error("🔌 **Database Configuration Required**")
-    st.info("To activate this application, please open your Streamlit Dashboard, head to App Settings -> Secrets, and provide your `SUPABASE_URL` and `SUPABASE_KEY` configuration targets.")
-    st.stop()
 
-# --- AUTHENTICATION FLOW ---
-def render_login_and_registration():
-    st.title("🏸 Court Scheduler Login")
-    tab1, tab2 = st.tabs(["Login", "Register"])
-    
-    with tab1:
-        with st.form("login_form"):
-            username = st.text_input("Username")
-            password = st.text_input("Password", type="password")
-            submitted = st.form_submit_button("Log In")
-            
-            if submitted:
-                res = supabase.table("users").select("*").eq("username", username).execute()
-                if res.data:
-                    user_data = res.data[0]
-                    if check_password(password, user_data["password"]):
-                        st.session_state.user = {
-                            "id": user_data["id"],
-                            "username": user_data["username"],
-                            "role": user_data.get("role", "user")
-                        }
-                        st.success("Logged in successfully!")
-                        st.rerun()
-                    else:
-                        st.error("Invalid password.")
-                else:
-                    st.error("Username not found.")
-                    
-    with tab2:
-        with st.form("register_form"):
-            new_user = st.text_input("New Username")
-            new_pass = st.text_input("New Password", type="password")
-            is_admin = st.checkbox("Register as Admin Account")
-            register_submitted = st.form_submit_button("Register")
-            
-            if register_submitted:
-                if not new_user or not new_pass:
-                    st.error("Fields cannot be empty.")
-                else:
-                    hashed = hash_password(new_pass)
-                    role = "admin" if is_admin else "user"
-                    try:
-                        supabase.table("users").insert({
-                            "username": new_user,
-                            "password": hashed,
-                            "role": role
-                        }).execute()
-                        st.success("Account created! You can now log in.")
-                    except Exception as e:
-                        st.error("Username might already exist or table mismatch.")
+# Initialize Isolated Tables on the Shared Supabase Instance
+def init_db():
+    with conn.session as session:
+        # Isolated Badminton Users table
+        session.execute(text("""
+        CREATE TABLE IF NOT EXISTS tennis_users (
+            id SERIAL PRIMARY KEY,
+            username TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL
+        )
+        """))
 
-# --- GATEWAY: ACCESS CODE VERIFICATION ---
-def render_access_code_gate():
-    st.title("🔒 Access Code Required")
-    st.write(f"Welcome back, **{st.session_state.user['username']}**! Please enter your facility access code to view the scheduler.")
-    
-    with st.form("access_code_form"):
-        code_input = st.text_input("Access Code", placeholder="e.g. MONSOON2026").strip()
-        submit_code = st.form_submit_button("Verify & Enter")
+        # Isolated Badminton Bookings table
+        session.execute(text("""
+        CREATE TABLE IF NOT EXISTS tennis_bookings (
+            id SERIAL PRIMARY KEY,
+            username TEXT NOT NULL,
+            booking_date TEXT NOT NULL,
+            slot TEXT NOT NULL
+        )
+        """))
+
+        # Isolated Badminton Sessions table
+        session.execute(text("""
+        CREATE TABLE IF NOT EXISTS tennis_sessions (
+            token TEXT PRIMARY KEY,
+            username TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """))
+        session.commit()
+
+        # -------- AUTOMATIC ADMIN ACCOUNT GENERATION & ENFORCEMENT -------- #
+        hashed_admin_password = make_hashes("LeBakri!!18")
         
-        if submit_code:
-            res = supabase.table("court_configurations").select("*").eq("access_code", code_input).execute()
-            if res.data:
-                config = res.data[0]
-                st.session_state.court_config = {
-                    "sport": config["sport"],
-                    "court_count": config["court_count"]
-                }
-                st.success(f"Access granted for {config['sport']}!")
-                st.rerun()
+        try:
+            res = session.execute(text("SELECT username FROM tennis_users WHERE username = 'admin'")).fetchone()
+            if res:
+                session.execute(text("UPDATE tennis_users SET password=:p WHERE username='admin'"), {"p": hashed_admin_password})
             else:
-                st.error("Invalid access code. Please verify with your admin.")
-                
-    if st.button("Log Out"):
-        logout()
+                session.execute(text("INSERT INTO tennis_users (username, password) VALUES (:u, :p)"), {"u": "admin", "p": hashed_admin_password})
+            session.commit()
+        except Exception:
+            session.rollback()
 
-# --- ADMIN DASHBOARD ---
-def render_admin_dashboard():
-    st.title("👑 Admin Control Panel")
+
+# Trigger initial table check on startup
+init_db()
+
+# ---------------- REMOVE EXPIRED BOOKINGS ---------------- #
+
+# Fetch current time in IST
+now = datetime.now(IST)
+
+# Fetch directly from Supabase using conn.query
+all_bookings_df = conn.query("SELECT id, booking_date, slot FROM tennis_bookings", ttl=0)
+
+if not all_bookings_df.empty:
+    with conn.session as session:
+        for _, row in all_bookings_df.iterrows():
+            bid = int(row['id'])
+            b_date = row['booking_date']
+            b_slot = row['slot']
+
+            # Parse and explicitly attach the IST timezone to the database record
+            booking_datetime = datetime.strptime(
+                f"{b_date} {b_slot}",
+                "%Y-%m-%d %I:%M %p"
+            ).replace(tzinfo=IST)
+
+            # Remove expired bookings securely comparing aware datetimes
+            if booking_datetime < now:
+                session.execute(text("DELETE FROM tennis_bookings WHERE id=:id"), {"id": bid})
+        session.commit()
+
+# ---------------- BASELINE STATE INITIALIZATION ---------------- #
+
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+
+if "username" not in st.session_state:
+    st.session_state.username = ""
+
+# Initialize Cookie Manager
+cookie_manager = stx.CookieManager()
+
+# BROWSER COOKIE AUTO-LOGIN INTERCEPTOR
+if not st.session_state.logged_in:
+    # Read unique badminton cookie directly from the user's browser hard drive
+    cookie_token = cookie_manager.get(cookie="badminton_scheduler_token")
     
-    # 1. Section to Create Access Codes
-    st.subheader("Create New Access Session")
-    with st.form("create_code_form", clear_on_submit=True):
-        sport = st.text_input("Sport / Event Name", placeholder="e.g., Badminton, Tennis")
-        courts = st.number_input("Number of Configured Courts", min_value=1, max_value=16, value=1)
-        new_code = st.text_input("Custom Access Code").strip()
-        create_submit = st.form_submit_button("Generate Configuration & Code")
+    if cookie_token:
+        # Crosscheck cookie validation key securely with Supabase database logs
+        session_df = conn.query("SELECT username FROM tennis_sessions WHERE token=:t", params={"t": cookie_token}, ttl=0)
         
-        if create_submit:
-            if not sport or not new_code:
-                st.error("All fields are required.")
-            else:
-                try:
-                    supabase.table("court_configurations").insert({
-                        "sport": sport,
-                        "court_count": courts,
-                        "access_code": new_code,
-                        "created_by": st.session_state.user["id"]
-                    }).execute()
-                    st.success(f"Successfully generated code '{new_code}' for {sport} ({courts} courts)!")
-                except Exception as e:
-                    st.error("Error creating code. Ensure the code is unique.")
-
-    st.write("---")
-    
-    # 2. Section to View Existing Access Codes
-    st.subheader("Active Court Configurations & Access Codes")
-    configs_res = supabase.table("court_configurations").select("*").order("created_at", desc=True).execute()
-    
-    if configs_res.data:
-        st.table([{
-            "Sport": c["sport"], 
-            "Available Courts": c["court_count"], 
-            "Access Code": c["access_code"],
-            "Created At": c["created_at"][:10]
-        } for c in configs_res.data])
-    else:
-        st.info("No access codes created yet.")
-
-# --- USER SCHEDULER BOARD ---
-def render_user_scheduler():
-    config = st.session_state.court_config
-    st.title(f"🏸 {config['sport']} Scheduler")
-    st.subheader(f"Managing {config['court_count']} Active Court Columns")
-    
-    # Select Date
-    selected_date = st.date_input("Select Booking Date", min_value=date.today())
-    
-    # Simple dynamic layout rendering: Create an interface layout spanning N courts
-    columns = st.columns(config["court_count"])
-    
-    # Fetch existing bookings for this day to cross-check slots
-    bookings_res = supabase.table("bookings").select("*").eq("booking_date", str(selected_date)).execute()
-    booked_slots = set()
-    if bookings_res.data:
-        for b in bookings_res.data:
-            booked_slots.add(f"{b['time_slot']}|{b.get('court_number', 1)}")
-
-    # Standard available hour slots 
-    time_slots = [f"{hour:02d}:00" for hour in range(6, 22)] # From 06:00 to 22:00 IST
-    
-    for court_index in range(config["court_count"]):
-        court_num = court_index + 1
-        with columns[court_index]:
-            st.metric(label=f"Court Name / ID", value=f"Court #{court_num}")
-            
-            for t_slot in time_slots:
-                slot_id = f"{t_slot}|{court_num}"
-                is_taken = slot_id in booked_slots
-                
-                if is_taken:
-                    st.button(f"🔒 {t_slot} (Booked)", key=f"btn_{slot_id}", disabled=True)
-                else:
-                    if st.button(f"🟢 Book {t_slot}", key=f"btn_{slot_id}"):
-                        try:
-                            supabase.table("bookings").insert({
-                                "user_id": st.session_state.user["id"],
-                                "booking_date": str(selected_date),
-                                "time_slot": t_slot,
-                                "court_number": court_num,
-                                "sport": config["sport"]
-                            }).execute()
-                            st.success(f"Booked Court {court_num} @ {t_slot}!")
-                            st.rerun()
-                        except Exception as e:
-                            st.error("Booking error occurred.")
-
-# --- CORE APPLICATION ROUTER ---
-if st.session_state.user is None:
-    render_login_and_registration()
-else:
-    with st.sidebar:
-        st.write(f"👤 Account: **{st.session_state.user['username']}**")
-        st.write(f"🛡️ Role: `{st.session_state.user['role'].upper()}`")
-        if st.session_state.court_config:
-            st.write(f"🎯 Session: **{st.session_state.court_config['sport']}**")
-            
-        if st.button("Log Out and Clear Session"):
-            logout()
-            
-    if st.session_state.user["role"] == "admin":
-        render_admin_dashboard()
-    else:
-        if st.session_state.court_config is None:
-            render_access_code_gate()
+        if not session_df.empty:
+            saved_username = session_df.iloc[0]["username"]
+            # Extra verification step: Check if the user record still exists in the user registry
+            user_check_df = conn.query("SELECT username FROM tennis_users WHERE username=:u", params={"u": saved_username}, ttl=0)
+            if not user_check_df.empty:
+                st.session_state.logged_in = True
+                st.session_state.username = saved_username
         else:
-            render_user_scheduler()
+            # Clean up invalid or tampered client cookies safely
+            cookie_manager.delete(cookie="badminton_scheduler_token")
+
+# Ensure URL parameter hacks are completely locked down
+st.query_params.clear()
+
+# ---------------- TITLE ---------------- #
+
+st.title("🏸 Badminton Court Booking Scheduler")
+
+# ---------------- LOGIN / SIGNUP ---------------- #
+
+if not st.session_state.logged_in:
+
+    menu = st.selectbox(
+        "Menu",
+        ["Login", "Sign Up"]
+    )
+
+    username = st.text_input("Username", key=f"user_{menu}").strip()
+    password = st.text_input("Password", type="password", key=f"pass_{menu}")
+    
+    # Only show the "Keep me logged in" checkbox if the menu mode is Login
+    remember_me = False
+    if menu == "Login":
+        remember_me = st.checkbox("Keep me logged in", key="remember_Login")
+
+    # -------- SIGN UP -------- #
+
+    if menu == "Sign Up":
+
+        if st.button("Create Account"):
+            if not username or not password:
+                st.error("Please fill in all fields.")
+            elif username.lower() == "admin":
+                st.error("The username 'admin' is a reserved system identifier.")
+            else:
+                existing_df = conn.query("SELECT username FROM tennis_users WHERE username=:u", params={"u": username}, ttl=0)
+
+                if not existing_df.empty:
+                    st.error("Username already exists")
+                else:
+                    try:
+                        with conn.session as session:
+                            session.execute(
+                                text("INSERT INTO tennis_users (username, password) VALUES (:u, :p)"),
+                                {"u": username, "p": make_hashes(password)}
+                            )
+                            session.commit()
+                        st.success("Account created! You can now switch to Login.")
+                    except Exception:
+                        st.error("Could not register user. Try again.")
+
+    # -------- LOGIN -------- #
+
+    else:
+
+        if st.button("Login"):
+            hashed_input = make_hashes(password)
+            user_df = conn.query("SELECT username, password FROM tennis_users WHERE username=:u", params={"u": username}, ttl=0)
+
+            if not user_df.empty:
+                stored_password = user_df.iloc[0]["password"]
+
+                if hashed_input == stored_password:
+                    st.session_state.logged_in = True
+                    st.session_state.username = username
+                    
+                    if remember_me:
+                        secure_token = secrets.token_urlsafe(32)
+                        current_timestamp = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+                        
+                        # Write tracking mapping to backend database
+                        with conn.session as session:
+                            session.execute(
+                                text("INSERT INTO tennis_sessions (token, username, created_at) VALUES (:t, :u, :c)"),
+                                {"t": secure_token, "u": username, "c": current_timestamp}
+                            )
+                            session.commit()
+                            
+                        # Store a persistent cookie on client browser configuration expiring in 30 days
+                        cookie_manager.set(
+                            cookie="badminton_scheduler_token",
+                            val=secure_token,
+                            expires_at=datetime.now() + pd.Timedelta(days=30)
+                        )
+                    
+                    st.query_params.clear()
+                    st.rerun()
+                else:
+                    st.error("Wrong password")
+            else:
+                st.error("User not found")
+
+# ---------------- MAIN APP ---------------- #
+
+else:
+
+    st.success(
+        f"Logged in as {st.session_state.username}"
+    )
+
+    # -------- PASSWORD CHANGING SYSTEM -------- #
+    with st.expander("👤 Account Security"):
+        st.subheader("Change Password")
+        with st.form("change_password_form", clear_on_submit=True):
+            current_password = st.text_input("Current Password", type="password")
+            new_password = st.text_input("New Password", type="password")
+            confirm_password = st.text_input("Confirm New Password", type="password")
+            submit_change = st.form_submit_button("Update Password")
+
+            if submit_change:
+                if not current_password or not new_password or not confirm_password:
+                    st.error("All password fields are required.")
+                elif new_password != confirm_password:
+                    st.error("New passwords do not match.")
+                else:
+                    user_data_df = conn.query("SELECT password FROM tennis_users WHERE username=:u", params={"u": st.session_state.username}, ttl=0)
+                    
+                    if not user_data_df.empty and make_hashes(current_password) == user_data_df.iloc[0]["password"]:
+                        new_hashed = make_hashes(new_password)
+                        with conn.session as session:
+                            session.execute(
+                                text("UPDATE tennis_users SET password=:p WHERE username=:u"), 
+                                {"p": new_hashed, "u": st.session_state.username}
+                            )
+                            session.commit()
+                        st.success("Password changed successfully!")
+                    else:
+                        st.error("Incorrect current password.")
+
+    # -------- ADMIN PANEL -------- #
+
+    if st.session_state.username == "admin":
+
+        st.subheader("👑 Admin Panel")
+
+        total_users = conn.query("SELECT COUNT(*) as count FROM tennis_users", ttl=0).iloc[0]['count']
+        total_bookings = conn.query("SELECT COUNT(*) as count FROM tennis_bookings", ttl=0).iloc[0]['count']
+
+        st.write(f"Total Users: {total_users}")
+        st.write(f"Total Bookings: {total_bookings}")
+
+        # -------- USER MANAGEMENT PANEL -------- #
+        st.subheader("👥 User Accounts Management")
+        
+        all_users_df = conn.query("SELECT username FROM tennis_users", ttl=0)
+        
+        if not all_users_df.empty:
+            for _, row in all_users_df.iterrows():
+                user_to_manage = row["username"]
+                if user_to_manage == "admin":
+                    continue
+                    
+                u_col1, u_col2 = st.columns([3, 1])
+                with u_col1:
+                    st.write(f"👤 User: **{user_to_manage}**")
+                with u_col2:
+                    if st.button("Delete Account", key=f"del_user_{user_to_manage}", type="secondary"):
+                        with conn.session as session:
+                            session.execute(text("DELETE FROM tennis_users WHERE username=:u"), {"u": user_to_manage})
+                            session.execute(text("DELETE FROM tennis_bookings WHERE username=:u"), {"u": user_to_manage})
+                            session.execute(text("DELETE FROM tennis_sessions WHERE username=:u"), {"u": user_to_manage})
+                            session.commit()
+                        st.success(f"Account '{user_to_manage}' and active bookings cleared successfully.")
+                        st.rerun()
+        else:
+            st.info("No user accounts found.")
+
+        # -------- VIEW ALL BOOKINGS -------- #
+
+        all_data_df = conn.query("SELECT username, booking_date, slot FROM tennis_bookings ORDER BY booking_date", ttl=0)
+
+        st.subheader("📋 All Bookings")
+
+        if not all_data_df.empty:
+            for _, row in all_data_df.iterrows():
+                st.write(f"{row['username']} | {row['booking_date']} | {row['slot']}")
+        else:
+            st.info("No bookings registered yet.")
+
+    # -------- DATE CHOICE -------- #
+
+    today = datetime.now(IST).date()
+    tomorrow = today + timedelta(days=1)
+
+    selected_date = st.radio(
+        "Choose Booking Day",
+        [today, tomorrow],
+        format_func=lambda x: x.strftime("%A %d %B")
+    )
+
+    # -------- GENERATE SLOTS -------- #
+
+    slots = []
+
+    start = datetime.strptime("00:00", "%H:%M")
+    end = datetime.strptime("23:59", "%H:%M")
+
+    now_ist = datetime.now(IST)
+
+    while start < end:
+        slot_str = start.strftime("%I:%M %p")
+
+        if selected_date == today:
+            if start.time() > now_ist.time():
+                slots.append(slot_str)
+        else:
+            slots.append(slot_str)
+
+        start += timedelta(minutes=30)
+
+    # -------- GET BOOKED SLOTS -------- #
+
+    booked_df = conn.query("SELECT slot FROM tennis_bookings WHERE booking_date=:d", params={"d": str(selected_date)}, ttl=0)
+    booked_slots = booked_df["slot"].tolist() if not booked_df.empty else []
+
+    # -------- GET YOUR SLOTS -------- #
+
+    your_df = conn.query("SELECT slot FROM tennis_bookings WHERE username=:u AND booking_date=:d", 
+                         params={"u": st.session_state.username, "d": str(selected_date)}, ttl=0)
+    your_slots = your_df["slot"].tolist() if not your_df.empty else []
+
+    # -------- SLOT LEGEND -------- #
+
+    st.markdown("""
+🟩 Available  
+🟥 Booked  
+🟦 Yours
+""")
+
+    # -------- SLOT UI -------- #
+
+    st.subheader("Time Slots")
+
+    cols = st.columns(4)
+
+    for i, slot in enumerate(slots):
+
+        with cols[i % 4]:
+
+            if slot in your_slots:
+                st.info(f"🟦 {slot}")
+
+            elif slot in booked_slots:
+                st.error(f"🟥 {slot}")
+
+            else:
+                if st.button(f"🟩 {slot}", key=f"slot_{slot}"):
+
+                    # Double-check slot
+                    check_df = conn.query("SELECT slot FROM tennis_bookings WHERE booking_date=:d AND slot=:s", 
+                                          params={"d": str(selected_date), "s": slot}, ttl=0)
+
+                    if not check_df.empty:
+                        st.error("Slot already booked")
+                    else:
+                        # Count bookings for THIS DAY
+                        count_df = conn.query("SELECT COUNT(*) as count FROM tennis_bookings WHERE username=:u AND booking_date=:d", 
+                                              params={"u": st.session_state.username, "d": str(selected_date)}, ttl=0)
+                        booking_count = count_df.iloc[0]['count']
+
+                        if booking_count >= 3:
+                            st.error("Maximum 3 bookings per day")
+                        else:
+                            with conn.session as session:
+                                session.execute(
+                                    text("INSERT INTO tennis_bookings (username, booking_date, slot) VALUES (:u, :d, :s)"),
+                                    {"u": st.session_state.username, "d": str(selected_date), "s": slot}
+                                )
+                                session.commit()
+                            st.success(f"Booked {slot}")
+                            st.rerun()
+
+    # -------- USER BOOKINGS -------- #
+
+    st.subheader("Your Bookings")
+
+    user_bookings_df = conn.query("SELECT id, booking_date, slot FROM tennis_bookings WHERE username=:u ORDER BY booking_date, slot", 
+                                  params={"u": st.session_state.username}, ttl=0)
+
+    if not user_bookings_df.empty:
+        for _, row in user_bookings_df.iterrows():
+            bid = int(row['id'])
+            booking_date_str = row['booking_date']
+            slot = row['slot']
+
+            col1, col2 = st.columns([3, 1])
+
+            with col1:
+                st.write(f"📌 {booking_date_str} at {slot}")
+
+            with col2:
+                if st.button("Cancel", key=f"cancel_{bid}"):
+                    with conn.session as session:
+                        session.execute(text("DELETE FROM tennis_bookings WHERE id=:id"), {"id": bid})
+                        session.commit()
+                    st.success("Booking cancelled")
+                    st.rerun()
+    else:
+        st.write("No bookings yet")
+
+    # -------- FIXED LOGOUT PIPELINE -------- #
+    st.divider()
+    if st.button("Logout", type="primary"):
+        active_cookie = cookie_manager.get(cookie="badminton_scheduler_token")
+        if active_cookie:
+            with conn.session as session:
+                session.execute(text("DELETE FROM tennis_sessions WHERE token=:t"), {"t": active_cookie})
+                session.commit()
+            
+            # Delete the token from the client's hard drive
+            cookie_manager.delete(cookie="badminton_scheduler_token")
+        
+        # Flush states out of session memory BEFORE rerunning to prevent a cycle deadlock
+        st.session_state.logged_in = False
+        st.session_state.username = ""
+        st.query_params.clear()
+        st.rerun()
