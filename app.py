@@ -127,7 +127,7 @@ if "username" not in st.session_state:
 if "court_config" not in st.session_state:
     st.session_state.court_config = None  # Tracks dynamic dictionary maps: {"sport", "court_count", "access_code"}
 
-# ✅ FIX: Initialize the Cookie Manager cleanly without caching decorators to avoid CachedWidgetWarning
+# Initialize the Cookie Manager cleanly without caching decorators to avoid CachedWidgetWarning
 def get_cookie_manager():
     try:
         return stx.CookieManager()
@@ -164,7 +164,7 @@ st.query_params.clear()
 
 # ---------------- TITLE ---------------- #
 
-st.title("🏟️ Dynamic Arena Booking Scheduler")
+st.title(" Stadium Management Portal")
 
 # ---------------- LOGIN / SIGNUP ---------------- #
 
@@ -296,7 +296,7 @@ else:
 
         st.subheader("👑 Admin Configurator Dashboard")
 
-        # 🛠️ FULLY CONFIGURABLE CODE INTAKE ENGINE
+        # CONFIGURABLE CODE INTAKE ENGINE
         st.markdown("### ⚙️ Create Custom Access Code & Facility Mapping")
         with st.form("admin_access_code_form", clear_on_submit=True):
             sport_input = st.text_input("Sport / Facility Category Name", placeholder="e.g., Football, Squash, Swimming").strip()
@@ -317,6 +317,7 @@ else:
                             )
                             session.commit()
                         st.success(f"Deployed! Code '{code_input}' dynamically generates a {courts_input}-court setup for '{sport_input}'.")
+                        st.rerun()
                     except Exception:
                         st.error("Failed to deploy rules. Verify this access code isn't a duplicate registry item.")
 
@@ -328,11 +329,27 @@ else:
         st.write(f"Total Users: {total_users}")
         st.write(f"Total Bookings: {total_bookings}")
 
-        # -------- ADMIN SETTINGS LOG REGISTRY -------- #
-        st.subheader("🔑 Active Configurations Registry")
-        all_configs_df = conn.query("SELECT sport as \"Sport\", court_count as \"Courts\", access_code as \"Code Key\", created_at as \"Created At\" FROM tennis_court_configurations ORDER BY id DESC", ttl=0)
+        # -------- ADMIN SETTINGS LOG REGISTRY WITH DELETE CONTROLS -------- #
+        st.subheader("🔑 Active Configurations Registry & Deletion")
+        all_configs_df = conn.query("SELECT id, sport, court_count, access_code FROM tennis_court_configurations ORDER BY id DESC", ttl=0)
+        
         if not all_configs_df.empty:
-            st.dataframe(all_configs_df, use_container_width=True)
+            for _, cfg_row in all_configs_df.iterrows():
+                cfg_id = int(cfg_row["id"])
+                cfg_sport = cfg_row["sport"]
+                cfg_courts = cfg_row["court_count"]
+                cfg_code = cfg_row["access_code"]
+                
+                c_col1, c_col2 = st.columns([3, 1])
+                with c_col1:
+                    st.markdown(f" Code Key: **{cfg_code}** | Sport: `{cfg_sport}` | Courts: `{cfg_courts}`")
+                with c_col2:
+                    if st.button("Delete Code Rule", key=f"del_code_{cfg_id}", type="secondary"):
+                        with conn.session as session:
+                            session.execute(text("DELETE FROM tennis_court_configurations WHERE id=:id"), {"id": cfg_id})
+                            session.commit()
+                        st.success(f"Configuration configuration key '{cfg_code}' deleted from system databases.")
+                        st.rerun()
         else:
             st.info("No customized setup rules have been provisioned by the admin yet.")
 
@@ -374,7 +391,7 @@ else:
         else:
             st.info("No bookings registered yet.")
 
-    # -------- MANDATORY GATEWAY WALL: FORCES DYNAMIC SYSTEM ISOLATION -------- #
+    # -------- MANDATORY GATEWAY WALL: FORCES DYNAMIC SYSTEM ISOLATION VIA ACCESS CODES -------- #
     elif st.session_state.court_config is None:
         st.subheader("🔒 Target Access Code Required")
         st.info("Please supply an active facility code to dynamically open your scheduler view panels.")
