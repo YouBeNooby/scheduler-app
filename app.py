@@ -265,152 +265,187 @@ if not st.session_state.logged_in:
             else:
                 st.error("User not found")
 
-# ---------------- MAIN APP ---------------- #
+# ---------------- MAIN APP (AUTHENTICATED SESSIONS) ---------------- #
 
 else:
 
-    st.success(
-        f"Logged in as {st.session_state.username}"
-    )
+    # ---------------- INTERFACE ARCHITECTURE: GLOBAL ACCOUNT SIDEBAR (LEFT) ---------------- #
+    with st.sidebar:
+        st.markdown(f"### 👤 Active Profile")
+        st.success(f"Logged in as: **{st.session_state.username}**")
+        
+        if st.session_state.court_config is not None:
+            st.info(f"🎯 Active Layout: **{st.session_state.court_config['sport']}**")
+            if st.button("🔄 Switch Access Code", use_container_width=True):
+                st.session_state.court_config = None
+                st.rerun()
+        
+        st.write("---")
+        
+        # -------- PASSWORD CHANGING SYSTEM FOR ALL ACCOUNTS IN SIDEBAR -------- #
+        st.markdown("### 🔒 Account Security")
+        with st.expander("Update Profile Password"):
+            with st.form("change_password_form", clear_on_submit=True):
+                current_password = st.text_input("Current Password", type="password")
+                new_password = st.text_input("New Password", type="password")
+                confirm_password = st.text_input("Confirm New Password", type="password")
+                submit_change = st.form_submit_button("Update Password", use_container_width=True)
 
-    # -------- PASSWORD CHANGING SYSTEM -------- #
-    with st.expander("👤 Account Security"):
-        st.subheader("Change Password")
-        with st.form("change_password_form", clear_on_submit=True):
-            current_password = st.text_input("Current Password", type="password")
-            new_password = st.text_input("New Password", type="password")
-            confirm_password = st.text_input("Confirm New Password", type="password")
-            submit_change = st.form_submit_button("Update Password")
-
-            if submit_change:
-                if not current_password or not new_password or not confirm_password:
-                    st.error("All password fields are required.")
-                elif new_password != confirm_password:
-                    st.error("New passwords do not match.")
-                else:
-                    user_data_df = conn.query("SELECT password FROM tennis_users WHERE username=:u", params={"u": st.session_state.username}, ttl=0)
-                    
-                    if not user_data_df.empty and make_hashes(current_password) == user_data_df.iloc[0]["password"]:
-                        new_hashed = make_hashes(new_password)
-                        with conn.session as session:
-                            session.execute(
-                                text("UPDATE tennis_users SET password=:p WHERE username=:u"), 
-                                {"p": new_hashed, "u": st.session_state.username}
-                            )
-                            session.commit()
-                        st.success("Password changed successfully!")
+                if submit_change:
+                    if not current_password or not new_password or not confirm_password:
+                        st.error("All password fields are required.")
+                    elif new_password != confirm_password:
+                        st.error("New passwords do not match.")
                     else:
-                        st.error("Incorrect current password.")
-
-    # -------- ADMIN PANEL UTILITIES (RENDERED ONLY FOR ADMIN) -------- #
-
-    if st.session_state.username == "admin":
-
-        st.subheader("👑 Admin Configurator Dashboard")
-
-        # CONFIGURABLE CODE INTAKE ENGINE WITH TIMEZONE PARAMETERS
-        st.markdown("### ⚙️ Create Custom Access Code & Facility Mapping")
-        with st.form("admin_access_code_form", clear_on_submit=True):
-            sport_input = st.text_input("Sport / Facility Category Name", placeholder="e.g., Football, Squash, Swimming").strip()
-            courts_input = st.number_input("Total Courts / Fields Configured", min_value=1, max_value=24, value=2)
-            code_input = st.text_input("Unique System Entry Code").strip()
-            
-            tz_input = st.selectbox(
-                "Facility Local Timezone",
-                options=all_tz_options,
-                index=all_tz_options.index("Asia/Kolkata") if "Asia/Kolkata" in all_tz_options else 0
-            )
-            submit_config = st.form_submit_button("Deploy Scheduler Configuration")
-
-            if submit_config:
-                if not sport_input or not code_input:
-                    st.error("All configuration parameters are strictly required.")
-                else:
-                    try:
-                        current_ts = datetime.now(current_tz_info).strftime("%Y-%m-%d %H:%M:%S")
-                        with conn.session as session:
-                            session.execute(
-                                text("INSERT INTO tennis_court_configurations (sport, court_count, access_code, timezone, created_at) VALUES (:s, :cc, :ac, :tz, :cat)"),
-                                {"s": sport_input, "cc": courts_input, "ac": code_input, "tz": tz_input, "cat": current_ts}
-                            )
-                            session.commit()
-                        st.success(f"Deployed! Code '{code_input}' locks a {courts_input}-court setup for '{sport_input}' in standard `{tz_input}` time.")
-                        st.rerun()
-                    except Exception:
-                        st.error("Failed to deploy rules. Verify this access code isn't a duplicate registry item.")
-
+                        user_data_df = conn.query("SELECT password FROM tennis_users WHERE username=:u", params={"u": st.session_state.username}, ttl=0)
+                        
+                        if not user_data_df.empty and make_hashes(current_password) == user_data_df.iloc[0]["password"]:
+                            new_hashed = make_hashes(new_password)
+                            with conn.session as session:
+                                session.execute(
+                                    text("UPDATE tennis_users SET password=:p WHERE username=:u"), 
+                                    {"p": new_hashed, "u": st.session_state.username}
+                                )
+                                session.commit()
+                            st.success("Password changed successfully!")
+                        else:
+                            st.error("Incorrect current password.")
+                            
         st.write("---")
-
-        total_users = conn.query("SELECT COUNT(*) as count FROM tennis_users", ttl=0).iloc[0]['count']
-        total_bookings = conn.query("SELECT COUNT(*) as count FROM tennis_bookings", ttl=0).iloc[0]['count']
-
-        st.write(f"Total Users: {total_users}")
-        st.write(f"Total Bookings: {total_bookings}")
-
-        # -------- ADMIN SETTINGS LOG REGISTRY WITH DELETE CONTROLS -------- #
-        st.subheader("🔑 Active Configurations Registry & Deletion")
-        all_configs_df = conn.query("SELECT id, sport, court_count, access_code, timezone FROM tennis_court_configurations ORDER BY id DESC", ttl=0)
         
-        if not all_configs_df.empty:
-            for _, cfg_row in all_configs_df.iterrows():
-                cfg_id = int(cfg_row["id"])
-                cfg_sport = cfg_row["sport"]
-                cfg_courts = cfg_row["court_count"]
-                cfg_code = cfg_row["access_code"]
-                cfg_tz = cfg_row.get("timezone", "Asia/Kolkata")
-                
-                c_col1, c_col2 = st.columns([3, 1])
-                with c_col1:
-                    st.markdown(f"🔹 Code Key: **{cfg_code}** | Sport: `{cfg_sport}` | Courts: `{cfg_courts}` | Timezone: `{cfg_tz}`")
-                with c_col2:
-                    if st.button("Delete Code Rule", key=f"del_code_{cfg_id}", type="secondary"):
-                        with conn.session as session:
-                            session.execute(text("DELETE FROM tennis_court_configurations WHERE id=:id"), {"id": cfg_id})
-                            session.commit()
-                        st.success(f"Configuration key '{cfg_code}' deleted from system databases.")
-                        st.rerun()
-        else:
-            st.info("No customized setup rules have been provisioned by the admin yet.")
-
-        # -------- USER MANAGEMENT PANEL -------- #
-        st.subheader("👥 User Accounts Management")
-        
-        all_users_df = conn.query("SELECT username FROM tennis_users", ttl=0)
-        
-        if not all_users_df.empty:
-            for _, row in all_users_df.iterrows():
-                user_to_manage = row["username"]
-                if user_to_manage == "admin":
-                    continue
+        # -------- FIXED LOGOUT PIPELINE IN SIDEBAR -------- #
+        if st.button("Logout from Account", type="primary", use_container_width=True):
+            if cookie_manager:
+                active_cookie = cookie_manager.get(cookie="badminton_scheduler_token")
+                if active_cookie:
+                    with conn.session as session:
+                        session.execute(text("DELETE FROM tennis_sessions WHERE token=:t"), {"t": active_cookie})
+                        session.commit()
                     
-                u_col1, u_col2 = st.columns([3, 1])
-                with u_col1:
-                    st.write(f"👤 User: **{user_to_manage}**")
-                with u_col2:
-                    if st.button("Delete Account", key=f"del_user_{user_to_manage}", type="secondary"):
-                        with conn.session as session:
-                            session.execute(text("DELETE FROM tennis_users WHERE username=:u"), {"u": user_to_manage})
-                            session.execute(text("DELETE FROM tennis_bookings WHERE username=:u"), {"u": user_to_manage})
-                            session.execute(text("DELETE FROM tennis_sessions WHERE username=:u"), {"u": user_to_manage})
-                            session.commit()
-                        st.success(f"Account '{user_to_manage}' and active bookings cleared successfully.")
-                        st.rerun()
-        else:
-            st.info("No user accounts found.")
-
-        # -------- VIEW ALL GLOBAL APP RESERVATIONS -------- #
-        st.subheader("📋 All Global Court Bookings")
-        all_data_df = conn.query("SELECT username, booking_date, slot, court_number, sport FROM tennis_bookings ORDER BY booking_date DESC, slot ASC", ttl=0)
-
-        if not all_data_df.empty:
-            for _, row in all_data_df.iterrows():
-                court_lbl = f"Court {row.get('court_number', 1)}"
-                sport_lbl = row.get('sport', 'Badminton')
-                st.write(f"👤 {row['username']} | 📅 {row['booking_date']} | ⏰ {row['slot']} | 🏟️ {court_lbl} ({sport_lbl})")
-        else:
-            st.info("No bookings registered yet.")
+                    try:
+                        cookie_manager.delete(cookie="badminton_scheduler_token")
+                    except Exception:
+                        pass
             
-        st.write("---")
+            st.session_state.logged_in = False
+            st.session_state.username = ""
+            st.session_state.court_config = None
+            st.query_params.clear()
+            st.rerun()
+
+    # ---------------- MAIN CONTENT WRAPPER ---------------- #
+
+    # -------- INTERFACE ARCHITECTURE: ADMIN COMMAND DECK (MAIN CONTENT TOP) -------- #
+    if st.session_state.username == "admin":
+        st.markdown("## 👑 Admin Control Panel")
+        
+        admin_tab1, admin_tab2, admin_tab3, admin_tab4 = st.tabs([
+            "⚙️ Deploy Access Configurations",
+            "🔑 Code Registry Logs",
+            "👥 Accounts Registry",
+            "📋 Global Bookings Registry"
+        ])
+        
+        with admin_tab1:
+            st.markdown("### Create Custom Access Code & Facility Mapping")
+            with st.form("admin_access_code_form", clear_on_submit=True):
+                sport_input = st.text_input("Sport / Facility Category Name", placeholder="e.g., Football, Squash, Swimming").strip()
+                courts_input = st.number_input("Total Courts / Fields Configured", min_value=1, max_value=24, value=2)
+                code_input = st.text_input("Unique System Entry Code").strip()
+                
+                tz_input = st.selectbox(
+                    "Facility Local Timezone",
+                    options=all_tz_options,
+                    index=all_tz_options.index("Asia/Kolkata") if "Asia/Kolkata" in all_tz_options else 0
+                )
+                submit_config = st.form_submit_button("Deploy Scheduler Configuration")
+
+                if submit_config:
+                    if not sport_input or not code_input:
+                        st.error("All configuration parameters are strictly required.")
+                    else:
+                        try:
+                            current_ts = datetime.now(current_tz_info).strftime("%Y-%m-%d %H:%M:%S")
+                            with conn.session as session:
+                                session.execute(
+                                    text("INSERT INTO tennis_court_configurations (sport, court_count, access_code, timezone, created_at) VALUES (:s, :cc, :ac, :tz, :cat)"),
+                                    {"s": sport_input, "cc": courts_input, "ac": code_input, "tz": tz_input, "cat": current_ts}
+                                )
+                                session.commit()
+                            st.success(f"Deployed! Code '{code_input}' locks a {courts_input}-court setup for '{sport_input}' in standard `{tz_input}` time.")
+                            st.rerun()
+                        except Exception:
+                            st.error("Failed to deploy rules. Verify this access code isn't a duplicate registry item.")
+                            
+        with admin_tab2:
+            st.markdown("### Active Configurations Registry & Deletion")
+            all_configs_df = conn.query("SELECT id, sport, court_count, access_code, timezone FROM tennis_court_configurations ORDER BY id DESC", ttl=0)
+            
+            if not all_configs_df.empty:
+                for _, cfg_row in all_configs_df.iterrows():
+                    cfg_id = int(cfg_row["id"])
+                    cfg_sport = cfg_row["sport"]
+                    cfg_courts = cfg_row["court_count"]
+                    cfg_code = cfg_row["access_code"]
+                    cfg_tz = cfg_row.get("timezone", "Asia/Kolkata")
+                    
+                    c_col1, c_col2 = st.columns([3, 1])
+                    with c_col1:
+                        st.markdown(f"🔹 Code Key: **{cfg_code}** | Sport: `{cfg_sport}` | Courts: `{cfg_courts}` | Timezone: `{cfg_tz}`")
+                    with c_col2:
+                        if st.button("Delete Code Rule", key=f"del_code_{cfg_id}", type="secondary"):
+                            with conn.session as session:
+                                session.execute(text("DELETE FROM tennis_court_configurations WHERE id=:id"), {"id": cfg_id})
+                                session.commit()
+                            st.success(f"Configuration key '{cfg_code}' deleted from system databases.")
+                            st.rerun()
+            else:
+                st.info("No customized setup rules have been provisioned by the admin yet.")
+                
+        with admin_tab3:
+            st.markdown("### User Accounts Management")
+            total_users = conn.query("SELECT COUNT(*) as count FROM tennis_users", ttl=0).iloc[0]['count']
+            st.write(f"Total Registered Users: {total_users}")
+            
+            all_users_df = conn.query("SELECT username FROM tennis_users", ttl=0)
+            
+            if not all_users_df.empty:
+                for _, row in all_users_df.iterrows():
+                    user_to_manage = row["username"]
+                    if user_to_manage == "admin":
+                        continue
+                        
+                    u_col1, u_col2 = st.columns([3, 1])
+                    with u_col1:
+                        st.write(f"👤 User: **{user_to_manage}**")
+                    with u_col2:
+                        if st.button("Delete Account", key=f"del_user_{user_to_manage}", type="secondary"):
+                            with conn.session as session:
+                                session.execute(text("DELETE FROM tennis_users WHERE username=:u"), {"u": user_to_manage})
+                                session.execute(text("DELETE FROM tennis_bookings WHERE username=:u"), {"u": user_to_manage})
+                                session.execute(text("DELETE FROM tennis_sessions WHERE username=:u"), {"u": user_to_manage})
+                                session.commit()
+                            st.success(f"Account '{user_to_manage}' and active bookings cleared successfully.")
+                            st.rerun()
+            else:
+                st.info("No user accounts found.")
+                
+        with admin_tab4:
+            st.markdown("### Global System Bookings Logs")
+            total_bookings = conn.query("SELECT COUNT(*) as count FROM tennis_bookings", ttl=0).iloc[0]['count']
+            st.write(f"Total Database Bookings: {total_bookings}")
+            
+            all_data_df = conn.query("SELECT username, booking_date, slot, court_number, sport FROM tennis_bookings ORDER BY booking_date DESC, slot ASC", ttl=0)
+
+            if not all_data_df.empty:
+                for _, row in all_data_df.iterrows():
+                    court_lbl = f"Court {row.get('court_number', 1)}"
+                    sport_lbl = row.get('sport', 'Badminton')
+                    st.write(f"👤 {row['username']} | 📅 {row['booking_date']} | ⏰ {row['slot']} | 🏟️ {court_lbl} ({sport_lbl})")
+            else:
+                st.info("No bookings registered yet.")
+                
+        st.markdown("---")
 
     # -------- MANDATORY GATEWAY WALL FOR ALL ACCOUNTS (INCLUDING ADMIN) -------- #
     if st.session_state.court_config is None:
@@ -443,9 +478,6 @@ else:
         total_courts_to_render = st.session_state.court_config["court_count"]
 
         st.markdown(f"## 🎯 Dynamic Workspace: **{current_sport}** (`{st.session_state.app_tz}` Time)")
-        if st.button("🔄 Change Active Session Access Code"):
-            st.session_state.court_config = None
-            st.rerun()
 
         # -------- DATE CHOICE -------- #
 
@@ -536,12 +568,8 @@ else:
         # -------- DISPLAY WORKSPACE-ISOLATED RESERVATIONS -------- #
         st.subheader(f"Your Bookings for {current_sport}")
 
-        if st.session_state.username == "admin":
-            user_bookings_df = conn.query("SELECT id, booking_date, slot, court_number, sport FROM tennis_bookings WHERE username=:u AND sport=:sp ORDER BY booking_date DESC, slot ASC", 
-                                          params={"u": st.session_state.username, "sp": current_sport}, ttl=0)
-        else:
-            user_bookings_df = conn.query("SELECT id, booking_date, slot, court_number, sport FROM tennis_bookings WHERE username=:u AND sport=:sp ORDER BY booking_date DESC, slot ASC", 
-                                          params={"u": st.session_state.username, "sp": current_sport}, ttl=0)
+        user_bookings_df = conn.query("SELECT id, booking_date, slot, court_number, sport FROM tennis_bookings WHERE username=:u AND sport=:sp ORDER BY booking_date DESC, slot ASC", 
+                                      params={"u": st.session_state.username, "sp": current_sport}, ttl=0)
 
         if not user_bookings_df.empty:
             for _, row in user_bookings_df.iterrows():
@@ -565,25 +593,3 @@ else:
                         st.rerun()
         else:
             st.write("You don't have any reservations registered under this specific category context yet.")
-
-    # -------- LOGOUT HANDSHAKE ENGINE -------- #
-    st.divider()
-    if st.button("Logout", type="primary"):
-        if cookie_manager:
-            active_cookie = cookie_manager.get(cookie="badminton_scheduler_token")
-            if active_cookie:
-                with conn.session as session:
-                    session.execute(text("DELETE FROM tennis_sessions WHERE token=:t"), {"t": active_cookie})
-                    session.commit()
-                
-                try:
-                    cookie_manager.delete(cookie="badminton_scheduler_token")
-                except Exception:
-                    pass
-        
-        # Flush configurations clean from active memory state maps to break cycle deadlocks
-        st.session_state.logged_in = False
-        st.session_state.username = ""
-        st.session_state.court_config = None
-        st.query_params.clear()
-        st.rerun()
