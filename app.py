@@ -127,28 +127,36 @@ if "username" not in st.session_state:
 if "court_config" not in st.session_state:
     st.session_state.court_config = None  # Dict tracking: {"sport":..., "court_count":...}
 
-# Initialize Cookie Manager
-cookie_manager = stx.CookieManager()
+# 🛠️ PATCh: Defer Cookie Manager Initialization to avoid requireServerUri Crash
+@st.cache_resource(ttl=None)
+def get_cookie_manager():
+    return stx.CookieManager()
+
+cookie_manager = get_cookie_manager()
 
 # BROWSER COOKIE AUTO-LOGIN INTERCEPTOR
-if not st.session_state.logged_in:
-    # Read unique badminton cookie directly from the user's browser hard drive
-    cookie_token = cookie_manager.get(cookie="badminton_scheduler_token")
-    
-    if cookie_token:
-        # Crosscheck cookie validation key securely with Supabase database logs
-        session_df = conn.query("SELECT username FROM tennis_sessions WHERE token=:t", params={"t": cookie_token}, ttl=0)
+if not st.session_state.logged_in and cookie_manager:
+    try:
+        # Read unique badminton cookie directly from the user's browser hard drive
+        cookie_token = cookie_manager.get(cookie="badminton_scheduler_token")
         
-        if not session_df.empty:
-            saved_username = session_df.iloc[0]["username"]
-            # Extra verification step: Check if the user record still exists in the user registry
-            user_check_df = conn.query("SELECT username FROM tennis_users WHERE username=:u", params={"u": saved_username}, ttl=0)
-            if not user_check_df.empty:
-                st.session_state.logged_in = True
-                st.session_state.username = saved_username
-        else:
-            # Clean up invalid or tampered client cookies safely
-            cookie_manager.delete(cookie="badminton_scheduler_token")
+        if cookie_token:
+            # Crosscheck cookie validation key securely with Supabase database logs
+            session_df = conn.query("SELECT username FROM tennis_sessions WHERE token=:t", params={"t": cookie_token}, ttl=0)
+            
+            if not session_df.empty:
+                saved_username = session_df.iloc[0]["username"]
+                # Extra verification step: Check if the user record still exists in the user registry
+                user_check_df = conn.query("SELECT username FROM tennis_users WHERE username=:u", params={"u": saved_username}, ttl=0)
+                if not user_check_df.empty:
+                    st.session_state.logged_in = True
+                    st.session_state.username = saved_username
+            else:
+                # Clean up invalid or tampered client cookies safely
+                cookie_manager.delete(cookie="badminton_scheduler_token")
+    except Exception:
+        # Prevent layout errors from blocking user interaction pipelines if iframe is blocked
+        pass
 
 # Ensure URL parameter hacks are completely locked down
 st.query_params.clear()
@@ -215,7 +223,7 @@ if not st.session_state.logged_in:
                     st.session_state.logged_in = True
                     st.session_state.username = username
                     
-                    if remember_me:
+                    if remember_me and cookie_manager:
                         secure_token = secrets.token_urlsafe(32)
                         current_timestamp = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
                         
@@ -228,11 +236,14 @@ if not st.session_state.logged_in:
                             session.commit()
                             
                         # Store a persistent cookie on client browser configuration expiring in 30 days
-                        cookie_manager.set(
-                            cookie="badminton_scheduler_token",
-                            val=secure_token,
-                            expires_at=datetime.now() + pd.Timedelta(days=30)
-                        )
+                        try:
+                            cookie_manager.set(
+                                cookie="badminton_scheduler_token",
+                                val=secure_token,
+                                expires_at=datetime.now() + pd.Timedelta(days=30)
+                            )
+                        except Exception:
+                            pass
                     
                     st.query_params.clear()
                     st.rerun()
@@ -301,7 +312,7 @@ else:
                         with conn.session as session:
                             session.execute(
                                 text("INSERT INTO tennis_court_configurations (sport, court_count, access_code, created_at) VALUES (:s, :cc, :ac, :cat)"),
-                                {"s": sport_type or sport_input, "cc": courts_input, "ac": code_input, "cat": current_ts}
+                                {"s": sport_input, "cc": courts_input, "ac": code_input, "cat": current_ts}
                             )
                             session.commit()
                         st.success(f"Access configuration deployed! Code '{code_input}' unlocks {sport_input} with {courts_input} courts.")
@@ -521,14 +532,18 @@ else:
     # -------- FIXED LOGOUT PIPELINE -------- #
     st.divider()
     if st.button("Logout", type="primary"):
-        active_cookie = cookie_manager.get(cookie="badminton_scheduler_token")
-        if active_cookie:
-            with conn.session as session:
-                session.execute(text("DELETE FROM tennis_sessions WHERE token=:t"), {"t": active_cookie})
-                session.commit()
-            
-            # Delete the token from the client's hard drive
-            cookie_manager.delete(cookie="badminton_scheduler_token")
+        if cookie_manager:
+            active_cookie = cookie_manager.get(cookie="badminton_scheduler_token")
+            if active_cookie:
+                with conn.session as session:
+                    session.execute(text("DELETE FROM tennis_sessions WHERE token=:t"), {"t": active_cookie})
+                    session.commit()
+                
+                # Delete the token from the client's hard drive
+                try:
+                    cookie_manager.delete(cookie="badminton_scheduler_token")
+                except Exception:
+                    pass
         
         # Flush states out of session memory BEFORE rerunning to prevent a cycle deadlock
         st.session_state.logged_in = False
