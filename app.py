@@ -1,7 +1,7 @@
 import streamlit as st
 import secrets  # For generating cryptographically secure session tokens
 from datetime import datetime, timedelta, date
-from zoneinfo import ZoneInfo  # Built-in timezone support (Python 3.9+)
+import zoneinfo  # Comprehensive timezone engine support (Python 3.9+)
 import hashlib
 from sqlalchemy import text
 import pandas as pd
@@ -13,8 +13,19 @@ st.set_page_config(
     layout="wide"
 )
 
-# Define IST Timezone
-IST = ZoneInfo("Asia/Kolkata")
+# -------- TIMEZONE REGISTRY CONFIGURATOR -------- #
+@st.cache_resource
+def get_all_timezones():
+    return sorted(list(zoneinfo.available_timezones()))
+
+all_tz_options = get_all_timezones()
+
+# Initialize dynamic timezone state mapping
+if "app_tz" not in st.session_state:
+    st.session_state.app_tz = "Asia/Kolkata"  # Default backup fallback
+
+# Instantiate active ZoneInfo pointer wrapper object
+current_tz_info = zoneinfo.ZoneInfo(st.session_state.app_tz)
 
 # ---------------- DATABASE CONNECTION ---------------- #
 
@@ -58,13 +69,14 @@ def init_db():
         )
         """))
 
-        # Completely configurable access code mapping registry
+        # Completely configurable access code mapping registry (with timezone column support)
         session.execute(text("""
         CREATE TABLE IF NOT EXISTS tennis_court_configurations (
             id SERIAL PRIMARY KEY,
             sport TEXT NOT NULL,
             court_count INTEGER NOT NULL DEFAULT 1,
             access_code TEXT UNIQUE NOT NULL,
+            timezone TEXT DEFAULT 'Asia/Kolkata',
             created_at TEXT NOT NULL
         )
         """))
@@ -89,8 +101,8 @@ init_db()
 
 # ---------------- REMOVE EXPIRED BOOKINGS ---------------- #
 
-# Fetch current time in IST
-now = datetime.now(IST)
+# Fetch current time in configured context timezone
+now = datetime.now(current_tz_info)
 
 # Fetch directly from Supabase using conn.query
 all_bookings_df = conn.query("SELECT id, booking_date, slot FROM tennis_bookings", ttl=0)
@@ -103,11 +115,11 @@ if not all_bookings_df.empty:
             b_slot = row['slot']
 
             try:
-                # Parse and explicitly attach the IST timezone to the database record
+                # Parse and explicitly attach the configured runtime timezone to the database record
                 booking_datetime = datetime.strptime(
                     f"{b_date} {b_slot}",
                     "%Y-%m-%d %I:%M %p"
-                ).replace(tzinfo=IST)
+                ).replace(tzinfo=current_tz_info)
 
                 # Remove expired bookings securely comparing aware datetimes
                 if booking_datetime < now:
@@ -162,9 +174,21 @@ if not st.session_state.logged_in and cookie_manager:
 # Ensure URL parameter hacks are completely locked down
 st.query_params.clear()
 
+# ---------------- GLOBAL TIMEZONE PICKER SIDEBAR MODULE ---------------- #
+with st.sidebar:
+    st.markdown("### 🌎 System Localization")
+    selected_tz = st.selectbox(
+        "Application Timezone",
+        options=all_tz_options,
+        index=all_tz_options.index(st.session_state.app_tz) if st.session_state.app_tz in all_tz_options else 0
+    )
+    if selected_tz != st.session_state.app_tz:
+        st.session_state.app_tz = selected_tz
+        st.rerun()
+
 # ---------------- TITLE ---------------- #
 
-st.title(" Stadium Management Portal")
+st.title("🏟️ Stadium Management Portal")
 
 # ---------------- LOGIN / SIGNUP ---------------- #
 
@@ -226,7 +250,7 @@ if not st.session_state.logged_in:
                     
                     if remember_me and cookie_manager:
                         secure_token = secrets.token_urlsafe(32)
-                        current_timestamp = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+                        current_timestamp = datetime.now(current_tz_info).strftime("%Y-%m-%d %H:%M:%S")
                         
                         # Write tracking mapping to backend database
                         with conn.session as session:
@@ -290,18 +314,25 @@ else:
                     else:
                         st.error("Incorrect current password.")
 
-    # -------- ADMIN PANEL -------- #
+    # -------- ADMIN PANEL UTILITIES (RENDERED ONLY FOR ADMIN) -------- #
 
     if st.session_state.username == "admin":
 
         st.subheader("👑 Admin Configurator Dashboard")
 
-        # CONFIGURABLE CODE INTAKE ENGINE
+        # CONFIGURABLE CODE INTAKE ENGINE WITH TIMEZONE PARAMETERS
         st.markdown("### ⚙️ Create Custom Access Code & Facility Mapping")
         with st.form("admin_access_code_form", clear_on_submit=True):
             sport_input = st.text_input("Sport / Facility Category Name", placeholder="e.g., Football, Squash, Swimming").strip()
             courts_input = st.number_input("Total Courts / Fields Configured", min_value=1, max_value=24, value=2)
             code_input = st.text_input("Unique System Entry Code").strip()
+            
+            # ✅ Configurable choice parameter to link custom time zones directly to the code object map
+            tz_input = st.selectbox(
+                "Facility Local Timezone",
+                options=all_tz_options,
+                index=all_tz_options.index("Asia/Kolkata") if "Asia/Kolkata" in all_tz_options else 0
+            )
             submit_config = st.form_submit_button("Deploy Scheduler Configuration")
 
             if submit_config:
@@ -309,14 +340,14 @@ else:
                     st.error("All configuration parameters are strictly required.")
                 else:
                     try:
-                        current_ts = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+                        current_ts = datetime.now(current_tz_info).strftime("%Y-%m-%d %H:%M:%S")
                         with conn.session as session:
                             session.execute(
-                                text("INSERT INTO tennis_court_configurations (sport, court_count, access_code, created_at) VALUES (:s, :cc, :ac, :cat)"),
-                                {"s": sport_input, "cc": courts_input, "ac": code_input, "cat": current_ts}
+                                text("INSERT INTO tennis_court_configurations (sport, court_count, access_code, timezone, created_at) VALUES (:s, :cc, :ac, :tz, :cat)"),
+                                {"s": sport_input, "cc": courts_input, "ac": code_input, "tz": tz_input, "cat": current_ts}
                             )
                             session.commit()
-                        st.success(f"Deployed! Code '{code_input}' dynamically generates a {courts_input}-court setup for '{sport_input}'.")
+                        st.success(f"Deployed! Code '{code_input}' locks a {courts_input}-court setup for '{sport_input}' in standard `{tz_input}` time.")
                         st.rerun()
                     except Exception:
                         st.error("Failed to deploy rules. Verify this access code isn't a duplicate registry item.")
@@ -331,7 +362,7 @@ else:
 
         # -------- ADMIN SETTINGS LOG REGISTRY WITH DELETE CONTROLS -------- #
         st.subheader("🔑 Active Configurations Registry & Deletion")
-        all_configs_df = conn.query("SELECT id, sport, court_count, access_code FROM tennis_court_configurations ORDER BY id DESC", ttl=0)
+        all_configs_df = conn.query("SELECT id, sport, court_count, access_code, timezone FROM tennis_court_configurations ORDER BY id DESC", ttl=0)
         
         if not all_configs_df.empty:
             for _, cfg_row in all_configs_df.iterrows():
@@ -339,16 +370,17 @@ else:
                 cfg_sport = cfg_row["sport"]
                 cfg_courts = cfg_row["court_count"]
                 cfg_code = cfg_row["access_code"]
+                cfg_tz = cfg_row.get("timezone", "Asia/Kolkata")
                 
                 c_col1, c_col2 = st.columns([3, 1])
                 with c_col1:
-                    st.markdown(f" Code Key: **{cfg_code}** | Sport: `{cfg_sport}` | Courts: `{cfg_courts}`")
+                    st.markdown(f"🔹 Code Key: **{cfg_code}** | Sport: `{cfg_sport}` | Courts: `{cfg_courts}` | Timezone: `{cfg_tz}`")
                 with c_col2:
                     if st.button("Delete Code Rule", key=f"del_code_{cfg_id}", type="secondary"):
                         with conn.session as session:
                             session.execute(text("DELETE FROM tennis_court_configurations WHERE id=:id"), {"id": cfg_id})
                             session.commit()
-                        st.success(f"Configuration configuration key '{cfg_code}' deleted from system databases.")
+                        st.success(f"Configuration key '{cfg_code}' deleted from system databases.")
                         st.rerun()
         else:
             st.info("No customized setup rules have been provisioned by the admin yet.")
@@ -390,9 +422,11 @@ else:
                 st.write(f"👤 {row['username']} | 📅 {row['booking_date']} | ⏰ {row['slot']} | 🏟️ {court_lbl} ({sport_lbl})")
         else:
             st.info("No bookings registered yet.")
+            
+        st.write("---")
 
-    # -------- MANDATORY GATEWAY WALL: FORCES DYNAMIC SYSTEM ISOLATION VIA ACCESS CODES -------- #
-    elif st.session_state.court_config is None:
+    # -------- MANDATORY GATEWAY WALL FOR ALL ACCOUNTS (INCLUDING ADMIN) -------- #
+    if st.session_state.court_config is None:
         st.subheader("🔒 Target Access Code Required")
         st.info("Please supply an active facility code to dynamically open your scheduler view panels.")
         
@@ -401,38 +435,35 @@ else:
             submit_gate = st.form_submit_button("Authenticate & Open Scheduler")
             
             if submit_gate:
-                match_df = conn.query("SELECT sport, court_count FROM tennis_court_configurations WHERE access_code=:ac", params={"ac": entered_code}, ttl=0)
+                match_df = conn.query("SELECT sport, court_count, timezone FROM tennis_court_configurations WHERE access_code=:ac", params={"ac": entered_code}, ttl=0)
                 if not match_df.empty:
+                    config_tz = match_df.iloc[0].get("timezone", "Asia/Kolkata")
                     st.session_state.court_config = {
                         "sport": match_df.iloc[0]["sport"],
                         "court_count": int(match_df.iloc[0]["court_count"]),
-                        "access_code": entered_code
+                        "access_code": entered_code,
+                        "timezone": config_tz
                     }
-                    st.success(f"Authorized! Opening your customized workspace for: **{st.session_state.court_config['sport']}**")
+                    # ✅ Sync global app timezone state directly to match the code's configuration properties
+                    st.session_state.app_tz = config_tz
+                    st.success(f"Authorized! Opening customized workspace for: **{st.session_state.court_config['sport']}** in zone `{config_tz}`.")
                     st.rerun()
                 else:
                     st.error("Invalid configuration credentials. Please double-check your code or consult your system administrator.")
 
     # -------- DYNAMIC SCHEDULER BOARD IMPLEMENTATION -------- #
-    if st.session_state.username == "admin" or st.session_state.court_config is not None:
-        
-        # Admin gets global baseline override view, users get their perfectly isolated setup rules
-        if st.session_state.username == "admin":
-            current_sport = "Global Admin View Manager"
-            total_courts_to_render = 1
-        else:
-            current_sport = st.session_state.court_config["sport"]
-            total_courts_to_render = st.session_state.court_config["court_count"]
+    else:
+        current_sport = st.session_state.court_config["sport"]
+        total_courts_to_render = st.session_state.court_config["court_count"]
 
-        st.markdown(f"## 🎯 Dynamic Workspace: **{current_sport}**")
-        if st.session_state.username != "admin":
-            if st.button("🔄 Change Session Access Code"):
-                st.session_state.court_config = None
-                st.rerun()
+        st.markdown(f"## 🎯 Dynamic Workspace: **{current_sport}** (`{st.session_state.app_tz}` Time)")
+        if st.button("🔄 Change Active Session Access Code"):
+            st.session_state.court_config = None
+            st.rerun()
 
         # -------- DATE CHOICE -------- #
 
-        today = datetime.now(IST).date()
+        today = datetime.now(current_tz_info).date()
         tomorrow = today + timedelta(days=1)
 
         selected_date = st.radio(
@@ -448,7 +479,7 @@ else:
         start = datetime.strptime("00:00", "%H:%M")
         end = datetime.strptime("23:59", "%H:%M")
 
-        now_ist = datetime.now(IST)
+        now_ist = datetime.now(current_tz_info)
 
         while start < end:
             slot_str = start.strftime("%I:%M %p")
@@ -516,12 +547,12 @@ else:
                                         st.success(f"Successfully booked {slot} on Court #{court_idx}!")
                                         st.rerun()
 
-        # -------- DISPLAY WORKSPACE-ISOLATED ACCORDION RESERVATIONS -------- #
+        # -------- DISPLAY WORKSPACE-ISOLATED RESERVATIONS -------- #
         st.subheader(f"Your Bookings for {current_sport}")
 
         if st.session_state.username == "admin":
-            user_bookings_df = conn.query("SELECT id, booking_date, slot, court_number, sport FROM tennis_bookings WHERE username=:u ORDER BY booking_date DESC, slot ASC", 
-                                          params={"u": st.session_state.username}, ttl=0)
+            user_bookings_df = conn.query("SELECT id, booking_date, slot, court_number, sport FROM tennis_bookings WHERE username=:u AND sport=:sp ORDER BY booking_date DESC, slot ASC", 
+                                          params={"u": st.session_state.username, "sp": current_sport}, ttl=0)
         else:
             user_bookings_df = conn.query("SELECT id, booking_date, slot, court_number, sport FROM tennis_bookings WHERE username=:u AND sport=:sp ORDER BY booking_date DESC, slot ASC", 
                                           params={"u": st.session_state.username, "sp": current_sport}, ttl=0)
