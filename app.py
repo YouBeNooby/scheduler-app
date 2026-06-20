@@ -437,7 +437,7 @@ else:
                     with c_col2:
                         if st.button("Delete Code Rule", key=f"del_code_{cfg_id}", type="secondary"):
                             with conn.session as session:
-                                # ✅ CASCADE FIX: When a configuration rule gets wiped out, purge all booking rows tied to that sport context as well
+                                # CASCADE DELETION: Purge matching booking rows as well
                                 session.execute(text("DELETE FROM tennis_bookings WHERE sport=:sp"), {"sp": cfg_sport})
                                 session.execute(text("DELETE FROM tennis_court_configurations WHERE id=:id"), {"id": cfg_id})
                                 session.commit()
@@ -479,14 +479,24 @@ else:
             total_bookings = conn.query("SELECT COUNT(*) as count FROM tennis_bookings", ttl=0).iloc[0]['count']
             st.write(f"Total Database Bookings: {total_bookings}")
             
-            # Master query pulling everything cleanly in order
-            all_data_df = conn.query("SELECT username, booking_date, slot, court_number, sport FROM tennis_bookings ORDER BY booking_date DESC, slot ASC", ttl=0)
+            all_data_df = conn.query("SELECT id, username, booking_date, slot, court_number, sport FROM tennis_bookings ORDER BY booking_date DESC, slot ASC", ttl=0)
 
             if not all_data_df.empty:
                 for _, row in all_data_df.iterrows():
+                    b_id = int(row['id'])
                     court_lbl = f"Court {row.get('court_number', 1)}"
                     sport_lbl = row.get('sport', 'Badminton')
-                    st.write(f"👤 {row['username']} | 📅 {row['booking_date']} | ⏰ {row['slot']} | 🏟️ {court_lbl} ({sport_lbl})")
+                    
+                    b_col1, b_col2 = st.columns([3, 1])
+                    with b_col1:
+                        st.write(f"👤 {row['username']} | 📅 {row['booking_date']} | ⏰ {row['slot']} | 🏟️ {court_lbl} ({sport_lbl})")
+                    with b_col2:
+                        if st.button("Cancel Booking", key=f"admin_cancel_bk_{b_id}", type="secondary"):
+                            with conn.session as session:
+                                session.execute(text("DELETE FROM tennis_bookings WHERE id=:id"), {"id": b_id})
+                                session.commit()
+                            st.success("Reservation removed successfully.")
+                            st.rerun()
             else:
                 st.info("No bookings registered yet.")
                 
