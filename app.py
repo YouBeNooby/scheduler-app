@@ -37,13 +37,15 @@ def init_db():
         )
         """))
 
-        # Isolated Badminton Bookings table
+        # Isolated Badminton Bookings table (extended to track multi-court settings safely)
         session.execute(text("""
         CREATE TABLE IF NOT EXISTS tennis_bookings (
             id SERIAL PRIMARY KEY,
             username TEXT NOT NULL,
             booking_date TEXT NOT NULL,
-            slot TEXT NOT NULL
+            slot TEXT NOT NULL,
+            court_number INTEGER DEFAULT 1,
+            sport TEXT DEFAULT 'Badminton'
         )
         """))
 
@@ -52,6 +54,17 @@ def init_db():
         CREATE TABLE IF NOT EXISTS tennis_sessions (
             token TEXT PRIMARY KEY,
             username TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """))
+
+        # Isolated Configurations & Access Codes table
+        session.execute(text("""
+        CREATE TABLE IF NOT EXISTS tennis_court_configurations (
+            id SERIAL PRIMARY KEY,
+            sport TEXT NOT NULL,
+            court_count INTEGER NOT NULL DEFAULT 1,
+            access_code TEXT UNIQUE NOT NULL,
             created_at TEXT NOT NULL
         )
         """))
@@ -89,15 +102,18 @@ if not all_bookings_df.empty:
             b_date = row['booking_date']
             b_slot = row['slot']
 
-            # Parse and explicitly attach the IST timezone to the database record
-            booking_datetime = datetime.strptime(
-                f"{b_date} {b_slot}",
-                "%Y-%m-%d %I:%M %p"
-            ).replace(tzinfo=IST)
+            try:
+                # Parse and explicitly attach the IST timezone to the database record
+                booking_datetime = datetime.strptime(
+                    f"{b_date} {b_slot}",
+                    "%Y-%m-%d %I:%M %p"
+                ).replace(tzinfo=IST)
 
-            # Remove expired bookings securely comparing aware datetimes
-            if booking_datetime < now:
-                session.execute(text("DELETE FROM tennis_bookings WHERE id=:id"), {"id": bid})
+                # Remove expired bookings securely comparing aware datetimes
+                if booking_datetime < now:
+                    session.execute(text("DELETE FROM tennis_bookings WHERE id=:id"), {"id": bid})
+            except Exception:
+                pass
         session.commit()
 
 # ---------------- BASELINE STATE INITIALIZATION ---------------- #
@@ -107,6 +123,9 @@ if "logged_in" not in st.session_state:
 
 if "username" not in st.session_state:
     st.session_state.username = ""
+
+if "court_config" not in st.session_state:
+    st.session_state.court_config = None  # Dict tracking: {"sport":..., "court_count":...}
 
 # Initialize Cookie Manager
 cookie_manager = stx.CookieManager()
@@ -265,11 +284,45 @@ else:
 
         st.subheader("👑 Admin Panel")
 
+        # Configurable Option Form to deploy custom Access Codes
+        st.markdown("### 🛠️ Deploy Active Session Access Configuration")
+        with st.form("admin_access_code_form", clear_on_submit=True):
+            sport_input = st.text_input("Target Sport/Activity Name", value="Badminton").strip()
+            courts_input = st.number_input("Number of Tracked Courts", min_value=1, max_value=16, value=1)
+            code_input = st.text_input("Custom Access Code (Unique)").strip()
+            submit_config = st.form_submit_button("Deploy Access Code Rule")
+
+            if submit_config:
+                if not sport_input or not code_input:
+                    st.error("All parameters are required to build a rule configuration block.")
+                else:
+                    try:
+                        current_ts = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+                        with conn.session as session:
+                            session.execute(
+                                text("INSERT INTO tennis_court_configurations (sport, court_count, access_code, created_at) VALUES (:s, :cc, :ac, :cat)"),
+                                {"s": sport_type or sport_input, "cc": courts_input, "ac": code_input, "cat": current_ts}
+                            )
+                            session.commit()
+                        st.success(f"Access configuration deployed! Code '{code_input}' unlocks {sport_input} with {courts_input} courts.")
+                    except Exception:
+                        st.error("Error writing configuration. Ensure the target Access Code is globally unique.")
+
+        st.write("---")
+
         total_users = conn.query("SELECT COUNT(*) as count FROM tennis_users", ttl=0).iloc[0]['count']
         total_bookings = conn.query("SELECT COUNT(*) as count FROM tennis_bookings", ttl=0).iloc[0]['count']
 
         st.write(f"Total Users: {total_users}")
         st.write(f"Total Bookings: {total_bookings}")
+
+        # -------- ADMIN ACCESS CODES VIEWER -------- #
+        st.subheader("🔑 Active System Access Codes Registry")
+        all_configs_df = conn.query("SELECT sport, court_count, access_code, created_at FROM tennis_court_configurations ORDER BY id DESC", ttl=0)
+        if not all_configs_df.empty:
+            st.dataframe(all_configs_df, use_container_width=True)
+        else:
+            st.info("No active structural configuration metrics created yet.")
 
         # -------- USER MANAGEMENT PANEL -------- #
         st.subheader("👥 User Accounts Management")
@@ -299,136 +352,171 @@ else:
 
         # -------- VIEW ALL BOOKINGS -------- #
 
-        all_data_df = conn.query("SELECT username, booking_date, slot FROM tennis_bookings ORDER BY booking_date", ttl=0)
+        all_data_df = conn.query("SELECT username, booking_date, slot, court_number, sport FROM tennis_bookings ORDER BY booking_date", ttl=0)
 
         st.subheader("📋 All Bookings")
 
         if not all_data_df.empty:
             for _, row in all_data_df.iterrows():
-                st.write(f"{row['username']} | {row['booking_date']} | {row['slot']}")
+                court_lbl = f"Court {row.get('court_number', 1)}"
+                sport_lbl = row.get('sport', 'Badminton')
+                st.write(f"{row['username']} | {row['booking_date']} | {row['slot']} | {court_lbl} ({sport_lbl})")
         else:
             st.info("No bookings registered yet.")
 
-    # -------- DATE CHOICE -------- #
-
-    today = datetime.now(IST).date()
-    tomorrow = today + timedelta(days=1)
-
-    selected_date = st.radio(
-        "Choose Booking Day",
-        [today, tomorrow],
-        format_func=lambda x: x.strftime("%A %d %B")
-    )
-
-    # -------- GENERATE SLOTS -------- #
-
-    slots = []
-
-    start = datetime.strptime("00:00", "%H:%M")
-    end = datetime.strptime("23:59", "%H:%M")
-
-    now_ist = datetime.now(IST)
-
-    while start < end:
-        slot_str = start.strftime("%I:%M %p")
-
-        if selected_date == today:
-            if start.time() > now_ist.time():
-                slots.append(slot_str)
-        else:
-            slots.append(slot_str)
-
-        start += timedelta(minutes=30)
-
-    # -------- GET BOOKED SLOTS -------- #
-
-    booked_df = conn.query("SELECT slot FROM tennis_bookings WHERE booking_date=:d", params={"d": str(selected_date)}, ttl=0)
-    booked_slots = booked_df["slot"].tolist() if not booked_df.empty else []
-
-    # -------- GET YOUR SLOTS -------- #
-
-    your_df = conn.query("SELECT slot FROM tennis_bookings WHERE username=:u AND booking_date=:d", 
-                         params={"u": st.session_state.username, "d": str(selected_date)}, ttl=0)
-    your_slots = your_df["slot"].tolist() if not your_df.empty else []
-
-    # -------- SLOT LEGEND -------- #
-
-    st.markdown("""
-🟩 Available  
-🟥 Booked  
-🟦 Yours
-""")
-
-    # -------- SLOT UI -------- #
-
-    st.subheader("Time Slots")
-
-    cols = st.columns(4)
-
-    for i, slot in enumerate(slots):
-
-        with cols[i % 4]:
-
-            if slot in your_slots:
-                st.info(f"🟦 {slot}")
-
-            elif slot in booked_slots:
-                st.error(f"🟥 {slot}")
-
-            else:
-                if st.button(f"🟩 {slot}", key=f"slot_{slot}"):
-
-                    # Double-check slot
-                    check_df = conn.query("SELECT slot FROM tennis_bookings WHERE booking_date=:d AND slot=:s", 
-                                          params={"d": str(selected_date), "s": slot}, ttl=0)
-
-                    if not check_df.empty:
-                        st.error("Slot already booked")
-                    else:
-                        # Count bookings for THIS DAY
-                        count_df = conn.query("SELECT COUNT(*) as count FROM tennis_bookings WHERE username=:u AND booking_date=:d", 
-                                              params={"u": st.session_state.username, "d": str(selected_date)}, ttl=0)
-                        booking_count = count_df.iloc[0]['count']
-
-                        if booking_count >= 3:
-                            st.error("Maximum 3 bookings per day")
-                        else:
-                            with conn.session as session:
-                                session.execute(
-                                    text("INSERT INTO tennis_bookings (username, booking_date, slot) VALUES (:u, :d, :s)"),
-                                    {"u": st.session_state.username, "d": str(selected_date), "s": slot}
-                                )
-                                session.commit()
-                            st.success(f"Booked {slot}")
-                            st.rerun()
-
-    # -------- USER BOOKINGS -------- #
-
-    st.subheader("Your Bookings")
-
-    user_bookings_df = conn.query("SELECT id, booking_date, slot FROM tennis_bookings WHERE username=:u ORDER BY booking_date, slot", 
-                                  params={"u": st.session_state.username}, ttl=0)
-
-    if not user_bookings_df.empty:
-        for _, row in user_bookings_df.iterrows():
-            bid = int(row['id'])
-            booking_date_str = row['booking_date']
-            slot = row['slot']
-
-            col1, col2 = st.columns([3, 1])
-
-            with col1:
-                st.write(f"📌 {booking_date_str} at {slot}")
-
-            with col2:
-                if st.button("Cancel", key=f"cancel_{bid}"):
-                    with conn.session as session:
-                        session.execute(text("DELETE FROM tennis_bookings WHERE id=:id"), {"id": bid})
-                        session.commit()
-                    st.success("Booking cancelled")
+    # -------- GATEWAY: ACCESS CODE CHALLENGE FOR USERS -------- #
+    elif st.session_state.court_config is None:
+        st.subheader("🔒 Verification Gate")
+        st.write("Please enter your venue's structural configuration code to open your scheduler interface panels.")
+        
+        with st.form("gate_access_form"):
+            entered_code = st.text_input("Access Code").strip()
+            submit_gate = st.form_submit_button("Verify Configuration Code")
+            
+            if submit_gate:
+                match_df = conn.query("SELECT sport, court_count FROM tennis_court_configurations WHERE access_code=:ac", params={"ac": entered_code}, ttl=0)
+                if not match_df.empty:
+                    st.session_state.court_config = {
+                        "sport": match_df.iloc[0]["sport"],
+                        "court_count": int(match_df.iloc[0]["court_count"])
+                    }
+                    st.success(f"Access granted! Opening panels for {st.session_state.court_config['sport']}.")
                     st.rerun()
-    else:
-        st.write("No bookings yet")
+                else:
+                    st.error("Invalid credentials block. Please double-check the configuration key with your administrator.")
+
+    # -------- SCHEDULER VIEW CONTROLLER ROUTER -------- #
+    if st.session_state.username == "admin" or st.session_state.court_config is not None:
+        
+        # Override values for tracking context
+        if st.session_state.username == "admin":
+            current_sport = "Global Admin View"
+            total_courts_to_render = 1
+        else:
+            current_sport = st.session_state.court_config["sport"]
+            total_courts_to_render = st.session_state.court_config["court_count"]
+
+        st.markdown(f"### 🎯 Session Context: **{current_sport}**")
+        if st.session_state.username != "admin":
+            if st.button("Switch Session Code / Sport"):
+                st.session_state.court_config = None
+                st.rerun()
+
+        # -------- DATE CHOICE -------- #
+
+        today = datetime.now(IST).date()
+        tomorrow = today + timedelta(days=1)
+
+        selected_date = st.radio(
+            "Choose Booking Day",
+            [today, tomorrow],
+            format_func=lambda x: x.strftime("%A %d %B")
+        )
+
+        # -------- GENERATE SLOTS -------- #
+
+        slots = []
+
+        start = datetime.strptime("00:00", "%H:%M")
+        end = datetime.strptime("23:59", "%H:%M")
+
+        now_ist = datetime.now(IST)
+
+        while start < end:
+            slot_str = start.strftime("%I:%M %p")
+
+            if selected_date == today:
+                if start.time() > now_ist.time():
+                    slots.append(slot_str)
+            else:
+                slots.append(slot_str)
+
+            start += timedelta(minutes=30)
+
+        # -------- TIME SLOT LAYOUT GRID GENERATOR LOOP -------- #
+        court_tabs = st.tabs([f"🏟️ Court #{c}" for c in range(1, total_courts_to_render + 1)])
+
+        for court_idx in range(1, total_courts_to_render + 1):
+            with court_tabs[court_idx - 1]:
+
+                # -------- GET BOOKED SLOTS -------- #
+                booked_df = conn.query("SELECT slot FROM tennis_bookings WHERE booking_date=:d AND court_number=:cn AND sport=:sp", 
+                                       params={"d": str(selected_date), "cn": court_idx, "sp": current_sport}, ttl=0)
+                booked_slots = booked_df["slot"].tolist() if not booked_df.empty else []
+
+                # -------- GET YOUR SLOTS -------- #
+                your_df = conn.query("SELECT slot FROM tennis_bookings WHERE username=:u AND booking_date=:d AND court_number=:cn AND sport=:sp", 
+                                     params={"u": st.session_state.username, "d": str(selected_date), "cn": court_idx, "sp": current_sport}, ttl=0)
+                your_slots = your_df["slot"].tolist() if not your_df.empty else []
+
+                # -------- SLOT LEGEND -------- #
+                st.markdown("🟩 Available  |  🟥 Booked  |  %s" % ("🟦 Yours" if st.session_state.username != "admin" else "🟦 Admin"))
+
+                # -------- SLOT UI -------- #
+                st.subheader(f"Time Slots - Court {court_idx}")
+                cols = st.columns(4)
+
+                for i, slot in enumerate(slots):
+                    with cols[i % 4]:
+                        if slot in your_slots:
+                            st.info(f"🟦 {slot}")
+                        elif slot in booked_slots:
+                            st.error(f"🟥 {slot}")
+                        else:
+                            if st.button(f"🟩 {slot}", key=f"slot_{slot}_c{court_idx}"):
+                                # Double-check slot explicitly
+                                check_df = conn.query("SELECT slot FROM tennis_bookings WHERE booking_date=:d AND slot=:s AND court_number=:cn AND sport=:sp", 
+                                                      params={"d": str(selected_date), "s": slot, "cn": court_idx, "sp": current_sport}, ttl=0)
+
+                                if not check_df.empty:
+                                    st.error("Slot already booked")
+                                else:
+                                    # Count bookings for THIS DAY globally for the account parameter
+                                    count_df = conn.query("SELECT COUNT(*) as count FROM tennis_bookings WHERE username=:u AND booking_date=:d", 
+                                                          params={"u": st.session_state.username, "d": str(selected_date)}, ttl=0)
+                                    booking_count = count_df.iloc[0]['count']
+
+                                    if booking_count >= 3 and st.session_state.username != "admin":
+                                        st.error("Maximum 3 bookings per day total allowed across courts.")
+                                    else:
+                                        with conn.session as session:
+                                            session.execute(
+                                                text("INSERT INTO tennis_bookings (username, booking_date, slot, court_number, sport) VALUES (:u, :d, :s, :cn, :sp)"),
+                                                {"u": st.session_state.username, "d": str(selected_date), "s": slot, "cn": court_idx, "sp": current_sport}
+                                            )
+                                            session.commit()
+                                        st.success(f"Booked {slot} on Court {court_idx}")
+                                        st.rerun()
+
+        # -------- USER BOOKINGS -------- #
+
+        st.subheader("Your Bookings")
+
+        user_bookings_df = conn.query("SELECT id, booking_date, slot, court_number, sport FROM tennis_bookings WHERE username=:u ORDER BY booking_date, slot", 
+                                      params={"u": st.session_state.username}, ttl=0)
+
+        if not user_bookings_df.empty:
+            for _, row in user_bookings_df.iterrows():
+                bid = int(row['id'])
+                booking_date_str = row['booking_date']
+                slot = row['slot']
+                c_num = row.get('court_number', 1)
+                s_name = row.get('sport', 'Badminton')
+
+                col1, col2 = st.columns([3, 1])
+
+                with col1:
+                    st.write(f"📌 {booking_date_str} at {slot} (Court {c_num} - {s_name})")
+
+                with col2:
+                    if st.button("Cancel", key=f"cancel_{bid}"):
+                        with conn.session as session:
+                            session.execute(text("DELETE FROM tennis_bookings WHERE id=:id"), {"id": bid})
+                            session.commit()
+                        st.success("Booking cancelled")
+                        st.rerun()
+        else:
+            st.write("No bookings yet")
 
     # -------- FIXED LOGOUT PIPELINE -------- #
     st.divider()
@@ -445,5 +533,6 @@ else:
         # Flush states out of session memory BEFORE rerunning to prevent a cycle deadlock
         st.session_state.logged_in = False
         st.session_state.username = ""
+        st.session_state.court_config = None
         st.query_params.clear()
         st.rerun()
