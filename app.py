@@ -127,10 +127,12 @@ if "username" not in st.session_state:
 if "court_config" not in st.session_state:
     st.session_state.court_config = None  # Dict tracking: {"sport":..., "court_count":...}
 
-# 🛠️ PATCh: Defer Cookie Manager Initialization to avoid requireServerUri Crash
-@st.cache_resource(ttl=None)
+# ✅ FIX: Initialize the Cookie Manager cleanly without caching decorators to avoid CachedWidgetWarning
 def get_cookie_manager():
-    return stx.CookieManager()
+    try:
+        return stx.CookieManager()
+    except Exception:
+        return None
 
 cookie_manager = get_cookie_manager()
 
