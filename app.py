@@ -165,7 +165,7 @@ def init_db():
         session.commit()
 
         # -------- AUTOMATIC ADMIN ACCOUNT GENERATION & ENFORCEMENT -------- #
-        hashed_admin_password = make_hashes("LeBakri!!18")
+        hashed_admin_password = make_hashes("LeBakri18!!")
         
         try:
             res = session.execute(text("SELECT username FROM tennis_users WHERE username = 'admin'")).fetchone()
