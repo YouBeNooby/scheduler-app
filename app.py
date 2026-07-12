@@ -109,7 +109,10 @@ def init_db():
         except Exception:
             session.rollback()
 
-init_db()
+# Run DB init only once per session to prevent hammering the connection
+if "db_initialized" not in st.session_state:
+    init_db()
+    st.session_state.db_initialized = True
 
 # ---------------- REMOVE EXPIRED BOOKINGS ---------------- #
 now = datetime.now(current_tz_info)
@@ -160,7 +163,8 @@ if not st.session_state.logged_in:
     else:
         st.subheader("Please Login or Sign Up")
 
-    menu = st.radio("Menu", ["Login", "Sign Up"], horizontal=True, key="auth_radio", on_change=st.rerun)
+    # CRASH FIX: Removed on_change=st.rerun to prevent memory segfaults
+    menu = st.radio("Menu", ["Login", "Sign Up"], horizontal=True, key="auth_radio")
 
     with st.form("auth_form", clear_on_submit=True):
         username = st.text_input("Username", key="auth_username").strip()
